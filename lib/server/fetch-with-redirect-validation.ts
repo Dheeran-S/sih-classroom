@@ -177,14 +177,17 @@ export async function fetchWithRedirectValidation(
     ? ({ ...(init ?? {}), dispatcher: options.dispatcher } as RequestInit)
     : (init ?? {});
   let currentUrl = requestUrlString(input);
-  // init of the hop about to be issued; credential headers may be removed
-  // from it before a cross-origin hop, never mutating the caller's init.
-  let hopInit: RequestInit = baseInit;
+  let hopInit: RequestInit = { ...baseInit };
+  const newHeaders = new Headers(hopInit.headers || {});
+  newHeaders.set('accept-encoding', 'identity');
+  hopInit.headers = newHeaders;
   for (let hop = 0; ; hop++) {
     const response = await fetchImpl(currentUrl, { ...hopInit, redirect: 'manual' });
     // Positive 3xx check: a transport double that omits `status` is treated as a
     // final response, while a real fetch always carries a numeric status.
-    if (!(response.status >= 300 && response.status < 400)) return response;
+    if (!(response.status >= 300 && response.status < 400)) {
+      return response;
+    }
 
     const location = response.headers.get('location');
     if (!location) throw new Error('Provider request redirected without a Location header');

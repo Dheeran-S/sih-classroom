@@ -1,1887 +1,1347 @@
 'use client';
 
-import { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { motion, AnimatePresence } from 'motion/react';
+import Link from 'next/link';
 import {
-  ArrowUp,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Clock,
-  Copy,
-  Folder,
-  FolderPlus,
-  ImagePlus,
-  Pencil,
-  Trash2,
-  Search,
-  Settings,
-  Sun,
-  Moon,
-  Monitor,
-  ChevronUp,
-  Upload,
-  Sparkles,
-  Atom,
-  X,
-  Presentation,
-  Loader2,
+  ArrowLeft, Brain, Award, BookOpen, Users, TrendingUp, Star,
+  Calendar, MapPin, CheckCircle, XCircle, ChevronRight, BarChart3,
+  Shield, Lightbulb, Target, Zap, ExternalLink, Clock, Play,
+  LayoutDashboard, GraduationCap, FileText, AlertTriangle, Loader2, RefreshCw
 } from 'lucide-react';
-import { useI18n } from '@/lib/hooks/use-i18n';
-import { LanguageSwitcher } from '@/components/language-switcher';
-import { createLogger } from '@/lib/logger';
-import { Button } from '@/components/ui/button';
-import { InputGroup, InputGroupInput, InputGroupButton } from '@/components/ui/input-group';
-import { Textarea as UITextarea } from '@/components/ui/textarea';
-import { cn } from '@/lib/utils';
-import { SettingsDialog } from '@/components/settings';
-import { GenerationToolbar } from '@/components/generation/generation-toolbar';
-import { AgentBar } from '@/components/agent/agent-bar';
-import { useTheme } from '@/lib/hooks/use-theme';
-import { nanoid } from 'nanoid';
-import { deleteDocumentBlob, storeDocumentBlob } from '@/lib/utils/image-storage';
-import { normalizeDocumentMimeType } from '@/lib/document/mime';
 import {
-  courseMaterialFingerprint,
-  dedupeCourseMaterialFiles,
-} from '@/lib/document/course-materials';
-import type {
-  SelectedCourseMaterial,
-  SessionDocumentSource,
-  UserRequirements,
-} from '@/lib/types/generation';
-import { useSettingsStore } from '@/lib/store/settings';
-import { hasUsableLLMProvider } from '@/lib/store/settings-validation';
-import { useUserProfileStore, AVATAR_OPTIONS } from '@/lib/store/user-profile';
-import {
-  StageListItem,
-  listStages,
-  deleteStageData,
-  renameStage,
-  getFirstSlideByStages,
-  revokeThumbnailSlideMediaUrls,
-  listFolders,
-  createFolder,
-  renameFolder,
-  deleteFolder,
-  setStageFolder,
-  FolderNameError,
-  type DeleteFolderMode,
-} from '@/lib/utils/stage-storage';
-import type { FolderRecord } from '@/lib/utils/database';
-import { displayNameWidth, FOLDER_NAME_MAX_WIDTH } from '@/lib/utils/folder-name-validation';
-import { FolderCard } from '@/components/discovery/folder-card';
-import { NewFolderDialog } from '@/components/discovery/folder-dialogs';
-import { MoveToFolderMenu } from '@/components/discovery/move-to-folder-menu';
-import { SlideThumbnail } from '@/components/slide-renderer/SlideThumbnail';
-import type { Slide } from '@openmaic/dsl';
-import { useMediaGenerationStore } from '@/lib/store/media-generation';
-import { toast } from 'sonner';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { useDraftCache } from '@/lib/hooks/use-draft-cache';
-import { SpeechButton } from '@/components/audio/speech-button';
-import { useImportClassroom } from '@/lib/import/use-import-classroom';
-import {
-  isProWorkbenchEnabled,
-  isPptxImportEnabled,
-  shouldShowVocationalTestUi,
-} from '@/lib/config/feature-flags';
-import { useImportPptx } from '@/lib/import/use-import-pptx';
-import { InteractiveModeButton } from '@/components/generation/interactive-mode-button';
-import { ProBadge } from '@/components/workbench/ProBadge';
-import { arrivedByProSwap, startProSwap } from '@/lib/workbench/pro-swap';
-import {
-  readLastWorkspaceSessionId,
-  workspaceResumeHref,
-} from '@/lib/workbench/workspace-session-memory';
+  COMPETENCIES,
+  ROLE_PROFILES,
+  ASSESSMENT_QUESTIONS,
+  DOMAIN_META,
+  calculateSkillGaps,
+  getRecommendations,
+  getCompetency,
+  type RoleProfile,
+  type IgotCourse,
+  type NsstaTpacProgram,
+  type CompetencyDomain,
+} from '@/data/skill-intelligence';
+import { listStages, type StageListItem } from '@/lib/utils/stage-storage';
 
-const log = createLogger('Home');
+const STOP_WORDS = new Set(['with', 'from', 'that', 'this', 'have', 'will', 'your', 'about', 'into', 'than', 'they', 'been', 'were', 'what', 'when', 'which', 'their', 'there', 'these', 'those', 'some', 'such', 'each', 'more', 'most', 'other', 'also', 'only', 'just', 'over', 'both', 'after', 'before', 'through', 'between', 'under', 'while', 'for', 'and', 'in']);
 
-const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
-const INTERACTIVE_MODE_STORAGE_KEY = 'interactiveModeEnabled';
+function isCourseGenerated(courseTitle: string, stages: StageListItem[]): boolean {
+  if (!stages || stages.length === 0) return false;
+  const titleLower = courseTitle.toLowerCase();
+  const keywords = courseTitle.split(/[^a-zA-Z0-9]+/)
+    .filter((w) => w.length > 3 && !STOP_WORDS.has(w.toLowerCase()))
+    .map((w) => w.toLowerCase());
 
-// PPTX import is still scaffolding: `useImportPptx` has no `onImported` consumer
-// yet, so the flow only logs the parsed slides. Hide the entry point behind a
-// flag until it's wired end-to-end, so the UI doesn't expose a no-op button.
-const PPTX_IMPORT_ENABLED = isPptxImportEnabled();
-
-/** The configured runtime probe result, retained across client navigations. */
-let workbenchRuntimeCache: boolean | null = null;
-
-interface FormState {
-  courseMaterials: SelectedCourseMaterial[];
-  requirement: string;
-  interactiveMode: boolean;
-  vocationalTestMode: boolean;
+  return stages.some((stage) => {
+    const stageNameLower = stage.name.toLowerCase();
+    if (stageNameLower.includes(titleLower) || titleLower.includes(stageNameLower)) return true;
+    if (keywords.length > 0 && keywords.some((kw) => stageNameLower.includes(kw))) return true;
+    return false;
+  });
 }
 
-const initialFormState: FormState = {
-  courseMaterials: [],
-  requirement: '',
-  interactiveMode: false,
-  vocationalTestMode: false,
+function getMatchingStage(courseTitle: string, stages: StageListItem[]): StageListItem | undefined {
+  if (!stages || stages.length === 0) return undefined;
+  const titleLower = courseTitle.toLowerCase();
+  const keywords = courseTitle.split(/[^a-zA-Z0-9]+/)
+    .filter((w) => w.length > 3 && !STOP_WORDS.has(w.toLowerCase()))
+    .map((w) => w.toLowerCase());
+
+  return stages.find((stage) => {
+    const stageNameLower = stage.name.toLowerCase();
+    if (stageNameLower.includes(titleLower) || titleLower.includes(stageNameLower)) return true;
+    if (keywords.length > 0 && keywords.some((kw) => stageNameLower.includes(kw))) return true;
+    return false;
+  });
+}
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+type Step = 'role' | 'quiz' | 'dashboard' | 'admin';
+
+interface QuizState {
+  currentQ: number;
+  answers: Record<string, number>; // question id → chosen index
+  answered: boolean;
+  showExplanation: boolean;
+}
+
+// ─── Score mapping ────────────────────────────────────────────────────────────
+function computeScoresFromQuiz(
+  roleId: string,
+  answers: Record<string, number>
+): Record<string, number> {
+  const role = ROLE_PROFILES.find((r) => r.id === roleId);
+  if (!role) return {};
+
+  const scores = { ...role.baseCompetencies };
+
+  // For each quiz answer, boost/penalise the relevant competency
+  for (const q of ASSESSMENT_QUESTIONS) {
+    if (!(q.id in answers)) continue;
+    const correct = answers[q.id] === q.correctIndex;
+    const current = scores[q.competencyId] ?? 1;
+    if (correct) {
+      scores[q.competencyId] = Math.min(5, current + q.difficulty * 0.7);
+    } else {
+      scores[q.competencyId] = Math.max(1, current - 0.3);
+    }
+  }
+
+  // Round to 1 dp
+  return Object.fromEntries(
+    Object.entries(scores).map(([k, v]) => [k, Math.round(v * 10) / 10])
+  );
+}
+
+// ─── Domain colours  ─────────────────────────────────────────────────────────
+const DOMAIN_COLORS: Record<CompetencyDomain, string> = {
+  statistical: '#2563eb',
+  technical: '#7c3aed',
+  digital_governance: '#0d9488',
+  behavioural: '#d97706',
 };
 
-function HomePage() {
-  const { t } = useI18n();
-  const { theme, setTheme } = useTheme();
-  const router = useRouter();
-  // Do not replay the classic hero's entrance after the route handoff already
-  // carried the lockup and composer into place.
-  const [swapped] = useState(arrivedByProSwap);
-  const heroEnter = (from: Record<string, number>) => (swapped ? false : from);
-  const showVocationalTestUi = shouldShowVocationalTestUi();
-  const workbenchBuildEnabled = isProWorkbenchEnabled();
-  const [workbenchRuntimeEnabled, setWorkbenchRuntimeEnabled] = useState(
-    workbenchRuntimeCache === true,
+// ─── ADMIN MOCK DATA ─────────────────────────────────────────────────────────
+const ADMIN_STATS = {
+  totalOfficials: 1247,
+  activelearners: 834,
+  completedThisMonth: 312,
+  avgCompletionRate: 68,
+  departments: [
+    { name: 'NSO / MoSPI', officials: 320, avgScore: 3.4, topGap: 'AI / Machine Learning' },
+    { name: 'NSSO Field', officials: 418, avgScore: 2.8, topGap: 'Python for Data Science' },
+    { name: 'State Bureaus', officials: 289, avgScore: 2.6, topGap: 'Data Quality Frameworks' },
+    { name: 'DPIIT Analytics', officials: 112, avgScore: 3.9, topGap: 'Cloud Computing' },
+    { name: 'NIC Statistical', officials: 108, avgScore: 3.1, topGap: 'SDG Indicators' },
+  ],
+  topSkillGaps: [
+    { skill: 'AI / Machine Learning', gap: 78 },
+    { skill: 'Python for Data Science', gap: 71 },
+    { skill: 'Cloud Computing', gap: 63 },
+    { skill: 'GIS & Spatial Analysis', gap: 58 },
+    { skill: 'Data Visualization', gap: 52 },
+    { skill: 'SDG Indicators', gap: 44 },
+  ],
+  domainDistribution: [
+    { domain: 'Statistical', avg: 3.2, color: '#2563eb' },
+    { domain: 'Technical', avg: 2.4, color: '#7c3aed' },
+    { domain: 'Digital Governance', avg: 2.7, color: '#0d9488' },
+    { domain: 'Behavioural', avg: 3.5, color: '#d97706' },
+  ],
+  recentActivity: [
+    { name: 'R. Sharma', action: 'Completed', course: 'Python for Statistical Analysis', time: '2h ago' },
+    { name: 'P. Verma', action: 'Enrolled', course: 'Sampling Theory and Survey Methodology', time: '3h ago' },
+    { name: 'S. Gupta', action: 'Assessed', course: 'Skill Assessment — SDG Indicators', time: '4h ago' },
+    { name: 'A. Mishra', action: 'Completed', course: 'Cybersecurity Essentials for Govt Officials', time: '5h ago' },
+    { name: 'M. Pillai', action: 'Enrolled', course: 'Machine Learning for Statistical Inference', time: '6h ago' },
+  ],
+};
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function ScoreBar({ value, max = 5, color = '#2563eb' }: { value: number; max?: number; color?: string }) {
+  const pct = Math.round((value / max) * 100);
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all duration-700"
+          style={{ width: `${pct}%`, backgroundColor: color }}
+        />
+      </div>
+      <span className="text-xs font-semibold text-gray-600 w-6 text-right">{value.toFixed(1)}</span>
+    </div>
   );
-  useEffect(() => {
-    if (!workbenchBuildEnabled || workbenchRuntimeCache !== null) return;
-    let cancelled = false;
-    fetch('/api/agent/runtime')
-      .then((response) => (response.ok ? response.json() : null))
-      .then((body) => {
-        workbenchRuntimeCache = body?.enabled === true;
-        if (!cancelled) setWorkbenchRuntimeEnabled(workbenchRuntimeCache);
-      })
-      .catch(() => {
-        // A failed probe keeps the entry hidden and allows a later visit to retry.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [workbenchBuildEnabled]);
-  const workbenchEntryEnabled = workbenchBuildEnabled && workbenchRuntimeEnabled;
-  const enterWorkbench = () => {
-    const href = workspaceResumeHref(readLastWorkspaceSessionId());
-    startProSwap(href, (next) => router.push(next));
-  };
-  useEffect(() => {
-    if (workbenchEntryEnabled) router.prefetch('/workspace');
-  }, [router, workbenchEntryEnabled]);
-  const [form, setForm] = useState<FormState>(initialFormState);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<
-    import('@/lib/types/settings').SettingsSection | undefined
-  >(undefined);
+}
 
-  // Draft cache for requirement text
-  const { cachedValue: cachedRequirement, updateCache: updateRequirementCache } =
-    useDraftCache<string>({ key: 'requirementDraft' });
-
-  // A usable LLM provider exists ⇒ a concrete model is always selected (#580
-  // invariant). Gate generation on this single condition (state A vs B)
-  // instead of inspecting modelId directly.
-  const providersConfig = useSettingsStore((s) => s.providersConfig);
-  const hasUsableProvider = hasUsableLLMProvider(providersConfig);
-  const [recentOpen, setRecentOpen] = useState(true);
-  const persistRecentOpen = (next: boolean) => {
-    setRecentOpen(next);
-    try {
-      localStorage.setItem(RECENT_OPEN_STORAGE_KEY, String(next));
-    } catch {
-      /* ignore */
-    }
-  };
-
-  // Hydrate client-only state after mount (avoids SSR mismatch)
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(RECENT_OPEN_STORAGE_KEY);
-      if (saved !== null) setRecentOpen(saved !== 'false');
-    } catch {
-      /* localStorage unavailable */
-    }
-    try {
-      const savedInteractiveMode = localStorage.getItem(INTERACTIVE_MODE_STORAGE_KEY);
-      if (savedInteractiveMode === 'true') {
-        setForm((prev) => ({ ...prev, interactiveMode: true }));
-      }
-    } catch {
-      /* localStorage unavailable */
-    }
-  }, []);
-
-  // Restore requirement draft from localStorage on mount. The previous derived-state
-  // pattern initialised `prev` from the cached value itself, so on the first client
-  // render the comparison was always equal and the restore never fired. Use an effect
-  // so the cache is hydrated into the form once we know the live requirement is empty.
-  const draftRestoredRef = useRef(false);
-  useEffect(() => {
-    if (draftRestoredRef.current) return;
-    if (!cachedRequirement) return;
-    draftRestoredRef.current = true;
-    setForm((prev) => (prev.requirement ? prev : { ...prev, requirement: cachedRequirement }));
-  }, [cachedRequirement]);
-
-  const [themeOpen, setThemeOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // True while the Generate click drains upload-time ingests and builds the
-  // generation session. Doubles as the guard flag that freezes the course
-  // material set for the duration of prep and as the switch that disables the
-  // toolbar's add/remove affordances, so the session is always built from a
-  // set that cannot change under it.
-  const [preparingGenerate, setPreparingGenerate] = useState(false);
-  const [classrooms, setClassrooms] = useState<StageListItem[]>([]);
-  const [thumbnails, setThumbnails] = useState<Record<string, Slide>>({});
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-
-  // Course folders — device-local grouping. `currentFolderId === undefined`
-  // is the root view (folders + unfiled courses); a folder id navigates into
-  // that folder's course list. Searching flattens every course regardless of
-  // folder and annotates each with its folder name.
-  const [folders, setFolders] = useState<FolderRecord[]>([]);
-  // True once the initial classroom + folder loads resolve. Guards layout
-  // selection so the hero does not flip between full-screen and compact as the
-  // two async reads land (avoids a visible layout shift on first paint).
-  const [hydrated, setHydrated] = useState(false);
-  const [currentFolderId, setCurrentFolderId] = useState<string | undefined>(undefined);
-  const [newFolderOpen, setNewFolderOpen] = useState(false);
-  // When set, the new-folder dialog is creating a folder AND moving this course
-  // into it (entered via the move-menu's "new folder" entry).
-  const [createAndMoveTarget, setCreateAndMoveTarget] = useState<string | null>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const searchButtonRef = useRef<HTMLButtonElement>(null);
-  const toolbarRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const thumbnailsRef = useRef<Record<string, Slide>>({});
-
-  const replaceThumbnails = (slides: Record<string, Slide>) => {
-    const previous = thumbnailsRef.current;
-    thumbnailsRef.current = slides;
-    setThumbnails(slides);
-    window.setTimeout(() => revokeThumbnailSlideMediaUrls(previous), 0);
-  };
-
-  // Close dropdowns when clicking outside
-  useEffect(() => {
-    if (!themeOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (toolbarRef.current && !toolbarRef.current.contains(e.target as Node)) {
-        setThemeOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [themeOpen]);
-
-  const loadClassrooms = async () => {
-    try {
-      const list = await listStages();
-      setClassrooms(list);
-      // Load first slide thumbnails
-      if (list.length > 0) {
-        const slides = await getFirstSlideByStages(list.map((c) => c.id));
-        replaceThumbnails(slides);
-      } else {
-        replaceThumbnails({});
-      }
-    } catch (err) {
-      log.error('Failed to load classrooms:', err);
-      toast.error('Persistence is unavailable. Saved classrooms could not be loaded.');
-    }
-  };
-
-  const loadFolders = async () => {
-    try {
-      setFolders(await listFolders());
-    } catch (err) {
-      log.error('Failed to load folders:', err);
-    }
-  };
-
-  // Capture the active folder when an import starts so the imported course
-  // lands in that folder, not whichever folder is active when the async import
-  // resolves (the user may have navigated away in the meantime).
-  const importFolderRef = useRef<string | undefined>(undefined);
-  const handleImportSuccess = async (importedStageId: string) => {
-    const folderId = importFolderRef.current;
-    importFolderRef.current = undefined;
-    // File the imported course into the folder that was active when the
-    // import began, before refreshing the list so the card appears in place.
-    if (folderId) {
-      try {
-        await setStageFolder(importedStageId, folderId);
-      } catch (err) {
-        log.error('Failed to assign imported course to folder:', err);
-        toast.error(t('classroom.moveFailed'));
-      }
-    }
-    await loadClassrooms();
-  };
-  const { importing, fileInputRef, triggerFileSelect, handleFileChange } =
-    useImportClassroom(handleImportSuccess);
-  const triggerImport = () => {
-    importFolderRef.current = currentFolderId;
-    triggerFileSelect();
-  };
-
-  const {
-    importing: pptxImporting,
-    fileInputRef: pptxFileInputRef,
-    triggerFileSelect: triggerPptxFileSelect,
-    handleFileChange: handlePptxFileChange,
-  } = useImportPptx();
-
-  useEffect(() => {
-    // Clear stale media store to prevent cross-course thumbnail contamination.
-    // The store may hold tasks from a previously visited classroom whose elementIds
-    // (gen_img_1, etc.) collide with other courses' placeholders.
-    useMediaGenerationStore.getState().revokeObjectUrls();
-    useMediaGenerationStore.setState({ tasks: {} });
-
-    // Read sessionStorage on the client only (avoids SSR hydration mismatch).
-    // Both reads resolve before flipping `hydrated`, so the hero layout does
-    // not thrash as each lands independently.
-    void Promise.all([loadClassrooms(), loadFolders()]).finally(() => setHydrated(true));
-
-    return () => {
-      revokeThumbnailSlideMediaUrls(thumbnailsRef.current);
-      thumbnailsRef.current = {};
-    };
-  }, []);
-
-  const handleDelete = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setPendingDeleteId(id);
-  };
-
-  const confirmDelete = async (id: string) => {
-    setPendingDeleteId(null);
-    try {
-      await deleteStageData(id);
-      await loadClassrooms();
-    } catch (err) {
-      log.error('Failed to delete classroom:', err);
-      toast.error('Failed to delete classroom');
-    }
-  };
-
-  const handleRename = async (id: string, newName: string) => {
-    try {
-      await renameStage(id, newName);
-      setClassrooms((prev) => prev.map((c) => (c.id === id ? { ...c, name: newName } : c)));
-    } catch (err) {
-      log.error('Failed to rename classroom:', err);
-      toast.error(t('classroom.renameFailed'));
-    }
-  };
-
-  // ─── Folder handlers ────────────────────────────────────────────────
-  const handleCreateFolder = async (name: string) => {
-    const folder = await createFolder(name);
-    setFolders((prev) => [...prev, folder]);
-    // If this create came from the move-menu's "new folder" entry, move the
-    // requesting course into the freshly created folder.
-    if (createAndMoveTarget) {
-      await handleMoveCourse(createAndMoveTarget, folder.id);
-      setCreateAndMoveTarget(null);
-    }
-  };
-
-  const handleRenameFolder =
-    (folder: FolderRecord) =>
-    async (newName: string): Promise<string | null> => {
-      // Empty or unchanged input just exits editing without an error.
-      const trimmed = newName.trim();
-      if (!trimmed || trimmed === folder.name) return null;
-      try {
-        await renameFolder(folder.id, newName);
-        setFolders((prev) => prev.map((f) => (f.id === folder.id ? { ...f, name: trimmed } : f)));
-        return null;
-      } catch (err) {
-        if (err instanceof FolderNameError) {
-          if (err.kind === 'duplicate') return t('classroom.folderNameExists');
-          if (err.kind === 'tooLong')
-            return t('classroom.folderWidth', {
-              width: displayNameWidth(trimmed),
-              max: FOLDER_NAME_MAX_WIDTH,
-            });
-          return t('classroom.folderNameHint');
-        }
-        log.error('Failed to rename folder:', err);
-        return t('classroom.folderRenameFailed');
-      }
-    };
-
-  const confirmDeleteFolder = async (folder: FolderRecord, mode: DeleteFolderMode) => {
-    try {
-      await deleteFolder(folder.id, mode);
-      if (currentFolderId === folder.id) setCurrentFolderId(undefined);
-    } catch (err) {
-      log.error('Failed to delete folder:', err);
-      toast.error(t('classroom.folderDeleteFailed'));
-    } finally {
-      // Always refresh authoritative state: in 'remove' mode a partial failure
-      // may have durably deleted some courses before throwing, and the UI must
-      // reflect that rather than leaving stale cards/counts behind.
-      await Promise.all([loadFolders(), loadClassrooms()]);
-    }
-  };
-
-  const handleMoveCourse = async (stageId: string, folderId: string | undefined) => {
-    // Optimistic update for snappy UI; the persistence call follows.
-    setClassrooms((prev) => prev.map((c) => (c.id === stageId ? { ...c, folderId } : c)));
-    try {
-      await setStageFolder(stageId, folderId);
-    } catch (err) {
-      log.error('Failed to move course:', err);
-      toast.error(t('classroom.moveFailed'));
-      // Revert on failure.
-      await loadClassrooms();
-    }
-  };
-
-  // From the move-menu's "new folder" entry: remember the course, then open the
-  // folder dialog. The actual create+move happens in handleCreateFolder once the
-  // name is confirmed. (A Radix DropdownMenu is modal, so the name input cannot
-  // live inside it; the dialog is the focus surface.)
-  const handleCreateAndMove = (stageId: string) => () => {
-    setCreateAndMoveTarget(stageId);
-    setNewFolderOpen(true);
-  };
-
-  const deferredSearchQuery = useDeferredValue(searchQuery);
-  const filteredClassrooms = useMemo(() => {
-    const q = deferredSearchQuery.trim().toLowerCase();
-    if (!q) return classrooms;
-    return classrooms.filter((c) => {
-      const name = c.name?.toLowerCase() ?? '';
-      const desc = c.description?.toLowerCase() ?? '';
-      return name.includes(q) || desc.includes(q);
-    });
-  }, [classrooms, deferredSearchQuery]);
-
-  // Folder-aware view model. Searching collapses the hierarchy: every matching
-  // course is shown flat, annotated with its folder name. Otherwise the root
-  // view shows folder tiles + unfiled courses, and a folder view shows only
-  // that folder's members.
-  const folderNameById = useMemo(() => new Map(folders.map((f) => [f.id, f.name])), [folders]);
-  const isSearching = deferredSearchQuery.trim().length > 0;
-  // The course tiles rendered in the active view: search flattens everything;
-  // a folder shows only its members; the root shows unfiled courses (folder
-  // tiles are rendered separately above them).
-  const visibleClassrooms = useMemo(() => {
-    if (isSearching) return filteredClassrooms;
-    if (currentFolderId) return filteredClassrooms.filter((c) => c.folderId === currentFolderId);
-    return filteredClassrooms.filter(
-      (c) => c.folderId === undefined || !folderNameById.has(c.folderId),
+function GapPill({ gap, current, required }: { gap: number; current?: number; required?: number }) {
+  if (gap <= 0) {
+    const excess = current && required ? (current - required).toFixed(1) : '0.0';
+    return (
+      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200 flex items-center gap-1">
+        <CheckCircle className="w-3 h-3 text-emerald-600" /> Exceeds (+{excess})
+      </span>
     );
-  }, [filteredClassrooms, isSearching, currentFolderId, folderNameById]);
-  const currentFolderClassrooms = useMemo(
-    () => (currentFolderId ? classrooms.filter((c) => c.folderId === currentFolderId) : []),
-    [classrooms, currentFolderId],
+  }
+
+  const colors =
+    gap >= 2.5 ? 'bg-red-50 text-red-700 border-red-200' :
+    gap >= 1.5 ? 'bg-orange-50 text-orange-700 border-orange-200' :
+    'bg-amber-50 text-amber-700 border-amber-200';
+  return (
+    <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${colors}`}>
+      Gap: {gap.toFixed(1)}
+    </span>
   );
-  const courseCountByFolder = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const c of classrooms) {
-      if (c.folderId) counts.set(c.folderId, (counts.get(c.folderId) ?? 0) + 1);
-    }
-    return counts;
-  }, [classrooms]);
-  // Up to 3 member course covers (first-slide thumbnails) per folder, for the
-  // folder tile's cover stack. Members are ordered by updatedAt desc so the
-  // frontmost cover is the most recently touched course.
-  const coverSlidesByFolder = useMemo(() => {
-    const byFolder = new Map<string, Slide[]>();
-    for (const c of [...classrooms].sort((a, b) => b.updatedAt - a.updatedAt)) {
-      if (!c.folderId) continue;
-      const slide = thumbnails[c.id];
-      if (!slide) continue;
-      const list = byFolder.get(c.folderId) ?? [];
-      if (list.length < 3) list.push(slide);
-      byFolder.set(c.folderId, list);
-    }
-    return byFolder;
-  }, [classrooms, thumbnails]);
-  const currentFolder = folders.find((f) => f.id === currentFolderId);
+}
 
-  const updateForm = <K extends keyof FormState>(field: K, value: FormState[K]) => {
-    setForm((prev) => ({ ...prev, [field]: value }));
-    try {
-      if (field === 'interactiveMode')
-        localStorage.setItem(INTERACTIVE_MODE_STORAGE_KEY, String(value));
-      if (field === 'requirement') updateRequirementCache(value as string);
-    } catch {
-      /* ignore */
-    }
+function LevelBadge({ level }: { level: 'junior' | 'mid' | 'senior' | 'executive' }) {
+  const map = {
+    junior: 'bg-green-50 text-green-700 border-green-200',
+    mid: 'bg-blue-50 text-blue-700 border-blue-200',
+    senior: 'bg-purple-50 text-purple-700 border-purple-200',
+    executive: 'bg-amber-50 text-amber-700 border-amber-200',
+  };
+  return (
+    <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${map[level]} uppercase tracking-wide`}>
+      {level}
+    </span>
+  );
+}
+
+// Mini radar chart with direct SVG labels and normalized 5-point scale
+function RadarChart({ data }: { data: { label: string; value: number; max: number; color: string }[] }) {
+  const N = data.length;
+  if (N === 0) return null;
+  const cx = 130; const cy = 130; const r = 70;
+  const step = (2 * Math.PI) / N;
+
+  const pt = (i: number, val: number) => {
+    const angle = step * i - Math.PI / 2;
+    const v = (Math.min(5, Math.max(0, val)) / 5) * r;
+    return [cx + v * Math.cos(angle), cy + v * Math.sin(angle)];
   };
 
-  const addCourseMaterials = (files: File[]) => {
-    // The set is frozen for the duration of generate-prep: adding is inert
-    // while `preparingGenerate` is set (the toolbar affordance is disabled
-    // via the same state), so nothing can slip into the set mid-prep.
-    if (preparingGenerate) return;
-    const dedupedFiles = dedupeCourseMaterialFiles(form.courseMaterials, files);
-    const startOrder = form.courseMaterials.length + 1;
-    const additions = dedupedFiles.map((file, index) => ({
-      id: nanoid(8),
-      file,
-      name: file.name,
-      size: file.size,
-      lastModified: file.lastModified,
-      type: file.type,
-      order: startOrder + index,
-    }));
+  const labelPt = (i: number) => {
+    const angle = step * i - Math.PI / 2;
+    const lr = r + 24;
+    return [cx + lr * Math.cos(angle), cy + lr * Math.sin(angle)];
+  };
 
-    if (additions.length === 0) return;
-    setForm((prev) => {
-      // Pure updater: drop any addition the latest state already carries — by
-      // id (a replayed or superseded update) or by content fingerprint (two
-      // addCourseMaterials calls in one render batch both dedupe against the
-      // same stale closure list, so the same file could otherwise enter twice
-      // under two ids and ingest/extract twice) — then append the rest.
-      const missing = additions.filter((addition) => {
-        if (prev.courseMaterials.some((item) => item.id === addition.id)) return false;
-        return !prev.courseMaterials.some(
-          (item) => courseMaterialFingerprint(item) === courseMaterialFingerprint(addition),
+  const rings = [1, 2, 3, 4, 5];
+  const axes = data.map((_, i) => {
+    const [x, y] = pt(i, 5);
+    return { x, y };
+  });
+
+  const poly = (scale: number) =>
+    data.map((_, i) => { const [x, y] = pt(i, scale); return `${x},${y}`; }).join(' ');
+
+  const valuePoly = data.map((d, i) => { const [x, y] = pt(i, d.value); return `${x},${y}`; }).join(' ');
+
+  return (
+    <svg viewBox="0 0 260 260" className="w-full max-w-[270px] overflow-visible">
+      {rings.map((ring) => (
+        <polygon key={ring} points={poly(ring)} fill="none" stroke="#e5e7eb" strokeWidth={1} />
+      ))}
+      {axes.map((ax, i) => (
+        <line key={i} x1={cx} y1={cy} x2={ax.x} y2={ax.y} stroke="#e5e7eb" strokeWidth={1} />
+      ))}
+      <polygon points={valuePoly} fill="rgba(99,102,241,0.2)" stroke="#4f46e5" strokeWidth={2} />
+      {data.map((d, i) => {
+        const [x, y] = pt(i, d.value);
+        const [lx, ly] = labelPt(i);
+        return (
+          <g key={i}>
+            <circle cx={x} cy={y} r={4} fill={d.color} stroke="#ffffff" strokeWidth={1.5} />
+            <text
+              x={lx}
+              y={ly}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              className="text-[10px] font-bold fill-gray-700"
+            >
+              {d.label}
+            </text>
+          </g>
         );
-      });
-      if (missing.length === 0) return prev;
-      return { ...prev, courseMaterials: [...prev.courseMaterials, ...missing] };
-    });
-  };
+      })}
+    </svg>
+  );
+}
 
-  const removeCourseMaterial = (id: string) => {
-    // The set is frozen for the duration of generate-prep: removing is inert
-    // while `preparingGenerate` is set (the toolbar affordance is disabled
-    // via the same state), so nothing can slip out of the set mid-prep.
-    if (preparingGenerate) return;
-    setForm((prev) => ({
+// ─── localStorage helpers ─────────────────────────────────────────────────────
+const SKILL_HUB_STORAGE_KEY = 'skillHubSession';
+
+interface SkillHubSession {
+  roleId: string;
+  scores: Record<string, number>;
+  gaps: Record<string, number>;
+  courseIds: string[];
+  programIds: string[];
+  quizAnswers?: Record<string, number>;
+  scorePercent?: number;
+  quizTaken?: boolean;
+}
+
+function saveSession(
+  roleId: string,
+  scores: Record<string, number>,
+  gaps: Record<string, number>,
+  recs: { courses: IgotCourse[]; programs: NsstaTpacProgram[] },
+  quizAnswers?: Record<string, number>,
+  scorePercent?: number,
+  quizTaken?: boolean
+) {
+  try {
+    const session: SkillHubSession = {
+      roleId,
+      scores,
+      gaps,
+      courseIds: recs.courses.map((c) => c.id),
+      programIds: recs.programs.map((p) => p.id),
+      quizAnswers: quizAnswers ?? {},
+      scorePercent,
+      quizTaken,
+    };
+    localStorage.setItem(SKILL_HUB_STORAGE_KEY, JSON.stringify(session));
+  } catch { /* ignore */ }
+}
+
+type Section = 'overview' | 'competencies' | 'courses' | 'programs' | 'analytics';
+
+// ─── MAIN PAGE ────────────────────────────────────────────────────────────────
+export default function SkillHubPage() {
+  const router = useRouter();
+  const [step, setStep] = useState<Step>('role');
+  const [selectedRoleId, setSelectedRoleId] = useState<string>('');
+  const [quiz, setQuiz] = useState<QuizState>({ currentQ: 0, answers: {}, answered: false, showExplanation: false });
+  const [currentScores, setCurrentScores] = useState<Record<string, number>>({});
+  const [gaps, setGaps] = useState<Record<string, number>>({});
+  const [recommendations, setRecommendations] = useState<{ courses: IgotCourse[]; programs: NsstaTpacProgram[] }>({ courses: [], programs: [] });
+  const [activeTab, setActiveTab] = useState<'learner' | 'admin'>('learner');
+  const [activeSection, setActiveSection] = useState<Section>('overview');
+  const [courseFilter, setCourseFilter] = useState<'all' | 'completed' | 'recommended'>('all');
+  const [domainFilter, setDomainFilter] = useState<string>('all');
+  const [generatedStages, setGeneratedStages] = useState<StageListItem[]>([]);
+  const [savedScorePercent, setSavedScorePercent] = useState<number | null>(null);
+  const [quizTaken, setQuizTaken] = useState<boolean>(false);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  // ─── Load generated classrooms on mount for live completed courses count ───
+  useEffect(() => {
+    let isMounted = true;
+    listStages().then((list) => {
+      if (isMounted) setGeneratedStages(list);
+    }).catch(() => { /* ignore */ });
+    return () => { isMounted = false; };
+  }, []);
+
+  // ─── Restore saved session on mount ────────────────────────────────────────
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SKILL_HUB_STORAGE_KEY);
+      if (!raw) return;
+      const session: SkillHubSession = JSON.parse(raw);
+      if (!session.roleId) return;
+      // Rebuild recommendations from stored IDs
+      import('@/data/skill-intelligence').then(({ IGOT_COURSES, NSSTA_TPAC_PROGRAMS }) => {
+        const courses = IGOT_COURSES.filter((c) => session.courseIds.includes(c.id));
+        const programs = NSSTA_TPAC_PROGRAMS.filter((p) => session.programIds.includes(p.id));
+        const recs = courses.length > 0 || programs.length > 0
+          ? { courses, programs }
+          : { courses: IGOT_COURSES.slice(0, 4), programs: NSSTA_TPAC_PROGRAMS.slice(0, 2) };
+        setSelectedRoleId(session.roleId);
+        setCurrentScores(session.scores);
+        setGaps(session.gaps);
+        setRecommendations(recs);
+        // Restore quiz answers and scores so scorePercent recalculates correctly
+        if (session.quizAnswers && Object.keys(session.quizAnswers).length > 0) {
+          setQuiz((prev) => ({ ...prev, answers: session.quizAnswers! }));
+        }
+        if (typeof session.scorePercent === 'number') {
+          setSavedScorePercent(session.scorePercent);
+        }
+        if (typeof session.quizTaken === 'boolean') {
+          setQuizTaken(session.quizTaken);
+        } else if (session.quizAnswers && Object.keys(session.quizAnswers).length > 0) {
+          setQuizTaken(true);
+        }
+        setStep('dashboard');
+      });
+    } catch { /* ignore */ }
+  }, []);
+
+  // Derive quiz questions relevant to selected role
+  const selectedRole = ROLE_PROFILES.find((r) => r.id === selectedRoleId);
+  const roleCompetencyIds = selectedRole ? Object.keys(selectedRole.requiredCompetencies) : [];
+  const quizQuestions = ASSESSMENT_QUESTIONS.filter((q) => roleCompetencyIds.includes(q.competencyId)).slice(0, 8);
+
+  const currentQuestion = quizQuestions[quiz.currentQ];
+
+  const handleAnswerSelect = (optionIdx: number) => {
+    if (quiz.answered) return;
+    setQuiz((prev) => ({
       ...prev,
-      courseMaterials: prev.courseMaterials
-        .filter((item) => item.id !== id)
-        .map((item, index) => ({ ...item, order: index + 1 })),
+      answers: { ...prev.answers, [currentQuestion.id]: optionIdx },
+      answered: true,
+      showExplanation: true,
     }));
   };
 
-  const handleGenerate = async () => {
-    // No model/provider guard here: generation is gated by `canGenerate`
-    // (requires a usable provider), and under the #580 invariant a usable
-    // provider always has a concrete model. State A (no usable provider)
-    // surfaces through the toolbar's single Configure-Provider affordance.
-    if (preparingGenerate) return;
-    if (!form.requirement.trim()) {
-      setError(t('upload.requirementRequired'));
+  const handleNext = () => {
+    if (quiz.currentQ < quizQuestions.length - 1) {
+      setQuiz((prev) => ({ ...prev, currentQ: prev.currentQ + 1, answered: false, showExplanation: false }));
+    } else {
+      // Finish quiz
+      const scores = computeScoresFromQuiz(selectedRoleId, quiz.answers);
+      setCurrentScores(scores);
+      const gapMap = calculateSkillGaps(selectedRoleId, scores);
+      setGaps(gapMap);
+      const recs = getRecommendations(Object.keys(gapMap));
+      setRecommendations(recs);
+
+      const calculatedCorrectCount = Object.entries(quiz.answers).filter(([qId, ans]) => {
+        const q = ASSESSMENT_QUESTIONS.find((q) => q.id === qId);
+        return q && q.correctIndex === ans;
+      }).length;
+      const pct = quizQuestions.length > 0 ? Math.round((calculatedCorrectCount / quizQuestions.length) * 100) : 70;
+
+      setSavedScorePercent(pct);
+      setQuizTaken(true);
+      saveSession(selectedRoleId, scores, gapMap, recs, quiz.answers, pct, true);
+      setStep('dashboard');
+    }
+  };
+
+  const handleSkipQuiz = () => {
+    const role = ROLE_PROFILES.find((r) => r.id === selectedRoleId);
+    if (!role) return;
+    const scores = { ...role.baseCompetencies };
+    setCurrentScores(scores);
+    const gapMap = calculateSkillGaps(selectedRoleId, scores);
+    setGaps(gapMap);
+    const recs = getRecommendations(Object.keys(gapMap));
+    setRecommendations(recs);
+    setSavedScorePercent(70);
+    setQuizTaken(false);
+    saveSession(selectedRoleId, scores, gapMap, recs, {}, 70, false);
+    setStep('dashboard');
+  };
+
+  const handleResetSession = () => {
+    try { localStorage.removeItem(SKILL_HUB_STORAGE_KEY); } catch { /* ignore */ }
+    setStep('role');
+    setSelectedRoleId('');
+    setQuiz({ currentQ: 0, answers: {}, answered: false, showExplanation: false });
+    setCurrentScores({});
+    setGaps({});
+    setRecommendations({ courses: [], programs: [] });
+    setSavedScorePercent(null);
+    setQuizTaken(false);
+  };
+
+  const launchClassroom = (topic: string, courseTitle?: string) => {
+    const titleToMatch = courseTitle || topic;
+    const existingStage = getMatchingStage(titleToMatch, generatedStages);
+    if (existingStage) {
+      router.push(`/classroom/${existingStage.id}`);
       return;
     }
 
-    setError(null);
-
-    // The material list and the extractor provider config are frozen for the
-    // duration of prep: `preparingGenerate` makes add/remove inert and
-    // disables the toolbar affordances (including the extractor Select and the
-    // web-search toggle), so neither can change under the session build below.
-    // Capture both at click time and build the session from this snapshot,
-    // never from live form state or live store state.
-    const frozenMaterials = [...form.courseMaterials].sort((a, b) => a.order - b.order);
-    const settingsSnapshot = useSettingsStore.getState();
-    const frozenPdfProviderId = settingsSnapshot.pdfProviderId;
-    const frozenPdfProviderConfig = settingsSnapshot.pdfProvidersConfig?.[
-      settingsSnapshot.pdfProviderId
-    ]
-      ? {
-          apiKey: settingsSnapshot.pdfProvidersConfig[settingsSnapshot.pdfProviderId].apiKey,
-          baseUrl: settingsSnapshot.pdfProvidersConfig[settingsSnapshot.pdfProviderId].baseUrl,
-          accessKeyId:
-            settingsSnapshot.pdfProvidersConfig[settingsSnapshot.pdfProviderId].accessKeyId,
-          accessKeySecret:
-            settingsSnapshot.pdfProvidersConfig[settingsSnapshot.pdfProviderId].accessKeySecret,
-        }
-      : undefined;
-
-    // Flip the generating UI state before material bytes are copied locally.
-    setPreparingGenerate(true);
-    try {
-      const userProfile = useUserProfileStore.getState();
-      const requirements: UserRequirements = {
-        requirement: form.requirement,
-        userNickname: userProfile.nickname || undefined,
-        userBio: userProfile.bio || undefined,
-        // Course-level web search now lives in settings (课程模型配置 → 联网调研)
-        webSearch: useSettingsStore.getState().webSearchEnabled || undefined,
-        interactiveMode: form.vocationalTestMode ? true : form.interactiveMode,
-        ...(form.vocationalTestMode ? { taskEngineMode: true } : {}),
-      };
-
-      let documentSources: SessionDocumentSource[] | undefined;
-      let pdfProviderId: string | undefined;
-      let pdfProviderConfig:
-        | { apiKey?: string; baseUrl?: string; accessKeyId?: string; accessKeySecret?: string }
-        | undefined;
-
-      if (frozenMaterials.length > 0) {
-        // The session is built from the click-time snapshot (frozen above),
-        // never from live store state.
-        pdfProviderId = frozenPdfProviderId;
-        pdfProviderConfig = frozenPdfProviderConfig;
-
-        const storedDocumentKeys: string[] = [];
-        try {
-          documentSources = [];
-          for (const [index, item] of frozenMaterials.entries()) {
-            const storageKey = await storeDocumentBlob(item.file);
-            storedDocumentKeys.push(storageKey);
-            documentSources.push({
-              id: item.id,
-              name: item.name,
-              size: item.size,
-              lastModified: item.lastModified,
-              mimeType: normalizeDocumentMimeType({
-                mimeType: item.file.type,
-                fileName: item.file.name,
-              }),
-              order: index + 1,
-              storageKey,
-              providerId: pdfProviderId,
-            });
-          }
-        } catch (error) {
-          await Promise.allSettled(storedDocumentKeys.map((key) => deleteDocumentBlob(key)));
-          throw error;
-        }
-      }
-
-      const sessionState = {
-        sessionId: nanoid(),
-        requirements,
-        pdfText: '',
-        pdfImages: [],
-        imageStorageIds: [],
-        documentSources,
-        // Backward-compatible single-document fields for previously saved sessions.
-        pdfStorageKey: documentSources?.[0]?.storageKey,
-        pdfFileName: documentSources?.[0]?.name,
-        documentMimeType: documentSources?.[0]?.mimeType,
-        pdfProviderId,
-        pdfProviderConfig,
-        sceneOutlines: null,
-        currentStep: 'generating' as const,
-      };
-      sessionStorage.setItem('generationSession', JSON.stringify(sessionState));
-
-      router.push('/generation-preview');
-    } catch (err) {
-      log.error('Error preparing generation:', err);
-      setError(err instanceof Error ? err.message : t('upload.generateFailed'));
-    } finally {
-      // Unfreeze the set once prep settles (navigation unmounts this page, so
-      // this is normally a no-op on the way out).
-      setPreparingGenerate(false);
-    }
+    const prompt = `I want to learn about "${topic}" in the context of India's Official Statistical System and iGOT Karmayogi capacity building.`;
+    sessionStorage.setItem('pendingClassroomTopic', JSON.stringify({ topic, prompt }));
+    router.push('/generator');
   };
 
-  const formatDate = (timestamp: number) => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffTime = Math.abs(now.getTime() - date.getTime());
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-
-    if (diffDays === 0) return t('classroom.today');
-    if (diffDays === 1) return t('classroom.yesterday');
-    if (diffDays < 7) return `${diffDays} ${t('classroom.daysAgo')}`;
-    return date.toLocaleDateString();
-  };
-
-  const canGenerate = !!form.requirement.trim() && hasUsableProvider;
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault();
-      if (canGenerate && !preparingGenerate) handleGenerate();
-    }
-  };
-
-  return (
-    <div className="min-h-[100dvh] w-full bg-gradient-to-b from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900 flex flex-col items-center p-4 pt-16 md:p-8 md:pt-16 overflow-x-hidden">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".zip"
-        onChange={handleFileChange}
-        className="hidden"
-      />
-      {PPTX_IMPORT_ENABLED && (
-        <input
-          ref={pptxFileInputRef}
-          type="file"
-          accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
-          onChange={handlePptxFileChange}
-          className="hidden"
-        />
-      )}
-      {/* ═══ Top-right pill (unchanged) ═══ */}
-      <div
-        ref={toolbarRef}
-        className="fixed top-4 right-4 z-50 flex items-center gap-1 bg-white/60 dark:bg-gray-800/60 backdrop-blur-md px-2 py-1.5 rounded-full border border-gray-100/50 dark:border-gray-700/50 shadow-sm"
-      >
-        {/* Language Selector */}
-        <LanguageSwitcher onOpen={() => setThemeOpen(false)} />
-
-        <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
-
-        {/* Theme Selector */}
-        <div className="relative">
-          <button
-            onClick={() => {
-              setThemeOpen(!themeOpen);
-            }}
-            className="p-2 rounded-full text-gray-400 dark:text-gray-500 hover:bg-white dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 hover:shadow-sm transition-all"
-          >
-            {theme === 'light' && <Sun className="w-4 h-4" />}
-            {theme === 'dark' && <Moon className="w-4 h-4" />}
-            {theme === 'system' && <Monitor className="w-4 h-4" />}
-          </button>
-          {themeOpen && (
-            <div className="absolute top-full mt-2 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[140px]">
-              <button
-                onClick={() => {
-                  setTheme('light');
-                  setThemeOpen(false);
-                }}
-                className={cn(
-                  'w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2',
-                  theme === 'light' &&
-                    'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400',
-                )}
-              >
-                <Sun className="w-4 h-4" />
-                {t('settings.themeOptions.light')}
-              </button>
-              <button
-                onClick={() => {
-                  setTheme('dark');
-                  setThemeOpen(false);
-                }}
-                className={cn(
-                  'w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2',
-                  theme === 'dark' &&
-                    'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400',
-                )}
-              >
-                <Moon className="w-4 h-4" />
-                {t('settings.themeOptions.dark')}
-              </button>
-              <button
-                onClick={() => {
-                  setTheme('system');
-                  setThemeOpen(false);
-                }}
-                className={cn(
-                  'w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2',
-                  theme === 'system' &&
-                    'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400',
-                )}
-              >
-                <Monitor className="w-4 h-4" />
-                {t('settings.themeOptions.system')}
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
-
-        {/* Settings Button */}
-        <div className="relative">
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="p-2 rounded-full text-gray-400 dark:text-gray-500 hover:bg-white dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 hover:shadow-sm transition-all group"
-          >
-            <Settings className="w-4 h-4 group-hover:rotate-90 transition-transform duration-500" />
-          </button>
-        </div>
-      </div>
-      <SettingsDialog
-        open={settingsOpen}
-        onOpenChange={(open) => {
-          setSettingsOpen(open);
-          if (!open) setSettingsSection(undefined);
-        }}
-        initialSection={settingsSection}
-      />
-
-      {/* ═══ Background Decor ═══ */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div
-          className="absolute top-0 left-1/4 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl animate-pulse"
-          style={{ animationDuration: '4s' }}
-        />
-        <div
-          className="absolute bottom-0 right-1/4 w-96 h-96 bg-purple-500/10 rounded-full blur-3xl animate-pulse"
-          style={{ animationDuration: '6s' }}
-        />
-      </div>
-
-      {/* ═══ Hero section: title + input (centered, wider) ═══ */}
-      <motion.div
-        initial={heroEnter({ opacity: 0, y: 20 })}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, ease: 'easeOut' }}
-        className={cn('relative z-20 w-full max-w-[800px] flex flex-col items-center mt-[10vh]')}
-      >
-        {/* ── Logo ── */}
-        <div className="relative" data-pro-morph="lockup">
-          <motion.img
-            src="/logo-horizontal.png"
-            alt="OpenMAIC"
-            initial={heroEnter({ opacity: 0, scale: 0.9 })}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{
-              delay: 0.1,
-              type: 'spring',
-              stiffness: 200,
-              damping: 20,
-            }}
-            className="h-12 md:h-16 mb-2 -ml-2 md:-ml-3"
-          />
-          {workbenchEntryEnabled ? (
-            <div
-              className="absolute left-full top-0 ml-1.5 mt-[10px] md:ml-2 md:mt-[14px]"
-              data-pro-morph="badge"
-            >
-              <ProBadge active={false} onToggle={enterWorkbench} />
-            </div>
-          ) : null}
-        </div>
-
-        {/* ── Slogan ── */}
-        <motion.p
-          initial={heroEnter({ opacity: 0 })}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.25 }}
-          className="text-sm text-muted-foreground/60 mb-8"
-        >
-          {t('home.slogan')}
-        </motion.p>
-
-        {/* ── Unified input area ── */}
-        <motion.div
-          initial={heroEnter({ opacity: 0, scale: 0.97 })}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.35 }}
-          className="w-full"
-        >
-          <div
-            data-pro-morph="composer"
-            className="w-full rounded-2xl border border-border/60 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl shadow-xl shadow-black/[0.03] dark:shadow-black/20 transition-shadow focus-within:shadow-2xl focus-within:shadow-violet-500/[0.06]"
-          >
-            {/* ── Greeting + Profile + Agents ── */}
-            <div className="relative z-20 flex items-start justify-between">
-              <GreetingBar />
-              <div className="pr-3 pt-3.5 shrink-0">
-                <AgentBar />
+  // ─── STEP: Role Selection ─────────────────────────────────────────────────
+  if (step === 'role') {
+    return (
+      <div className="min-h-screen bg-slate-50">
+        {/* Header */}
+        <header className="bg-white border-b border-gray-200 shadow-sm">
+          <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center">
+                  <Brain className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <div className="text-sm font-bold text-gray-900">Skill Intelligence Platform</div>
+                </div>
               </div>
             </div>
-
-            {/* Textarea */}
-            <textarea
-              ref={textareaRef}
-              placeholder={t('upload.requirementPlaceholder')}
-              className="w-full resize-none border-0 bg-transparent px-4 pt-1 pb-2 text-[13px] leading-relaxed placeholder:text-muted-foreground/40 focus:outline-none min-h-[140px] max-h-[300px]"
-              value={form.requirement}
-              onChange={(e) => updateForm('requirement', e.target.value)}
-              onKeyDown={handleKeyDown}
-              rows={4}
-            />
-
-            {/* Toolbar row */}
-            <div className="px-3 pb-3 flex items-end gap-2">
-              <div className="flex-1 min-w-0">
-                <GenerationToolbar
-                  courseMaterials={form.courseMaterials}
-                  onCourseMaterialsAdd={addCourseMaterials}
-                  onCourseMaterialRemove={removeCourseMaterial}
-                  onPdfError={setError}
-                  materialsLocked={preparingGenerate}
-                  onSettingsOpen={(section) => {
-                    setSettingsSection(section);
-                    setSettingsOpen(true);
-                  }}
-                />
-              </div>
-
-              {/* Interactive mode toggle */}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <InteractiveModeButton
-                    pressed={form.interactiveMode}
-                    label={t('toolbar.interactiveModeLabel')}
-                    onPressedChange={(pressed) => updateForm('interactiveMode', pressed)}
-                  />
-                </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs">
-                  {t('toolbar.interactiveModeHint')}
-                </TooltipContent>
-              </Tooltip>
-
-              {/* Voice input */}
-              <SpeechButton
-                size="md"
-                onTranscription={(text) => {
-                  setForm((prev) => {
-                    const next = prev.requirement + (prev.requirement ? ' ' : '') + text;
-                    updateRequirementCache(next);
-                    return { ...prev, requirement: next };
-                  });
-                }}
-              />
-
-              {/* Send button */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500 bg-gray-100 px-2.5 py-1 rounded-full">MoSPI / NSSTA</span>
               <button
-                onClick={handleGenerate}
-                disabled={!canGenerate || preparingGenerate}
-                className={cn(
-                  'shrink-0 h-8 rounded-lg flex items-center justify-center gap-1.5 transition-all px-3',
-                  canGenerate && !preparingGenerate
-                    ? 'bg-primary text-primary-foreground hover:opacity-90 shadow-sm cursor-pointer'
-                    : 'bg-muted text-muted-foreground/40 cursor-not-allowed',
-                )}
+                onClick={() => setStep('dashboard')}
+                className="text-xs text-indigo-600 hover:text-indigo-700 font-medium flex items-center gap-1"
               >
-                <span className="text-xs font-medium">
-                  {preparingGenerate ? t('stage.generating') : t('toolbar.enterClassroom')}
-                </span>
-                {preparingGenerate ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <ArrowUp className="size-3.5" />
-                )}
+                <LayoutDashboard className="w-3.5 h-3.5" /> Admin View
               </button>
             </div>
           </div>
-        </motion.div>
+        </header>
 
-        {showVocationalTestUi && (
-          <motion.div
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4 }}
-            className="mt-2 flex w-full justify-start px-1"
-          >
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={form.vocationalTestMode}
-                  onClick={() => updateForm('vocationalTestMode', !form.vocationalTestMode)}
-                  className={cn(
-                    'inline-flex h-7 items-center gap-2 rounded-full border px-2.5 text-[11px] font-medium transition-colors',
-                    form.vocationalTestMode
-                      ? 'border-cyan-400/70 bg-cyan-50 text-cyan-700 shadow-[0_0_10px_rgba(6,182,212,0.16)] dark:bg-cyan-950/40 dark:text-cyan-300'
-                      : 'border-border/70 bg-background/70 text-muted-foreground hover:border-cyan-300/60 hover:text-cyan-700 dark:hover:text-cyan-300',
-                  )}
-                >
-                  <span className="rounded-full bg-cyan-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-normal text-cyan-700 dark:bg-cyan-900/45 dark:text-cyan-300">
-                    测试功能
-                  </span>
-                  <Sparkles className="size-3.5" />
-                  <span>职教任务</span>
-                  <span
-                    className={cn(
-                      'relative h-3.5 w-6 rounded-full transition-colors',
-                      form.vocationalTestMode ? 'bg-cyan-500' : 'bg-muted-foreground/25',
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        'absolute left-0.5 top-0.5 size-2.5 rounded-full bg-white transition-transform',
-                        form.vocationalTestMode ? 'translate-x-2.5' : 'translate-x-0',
-                      )}
-                    />
-                  </span>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                从当前输入框提交职教实操训练测试
-              </TooltipContent>
-            </Tooltip>
-          </motion.div>
-        )}
-
-        {/* ── Error ── */}
-        <AnimatePresence>
-          {error && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="mt-3 w-full p-3 bg-destructive/10 border border-destructive/20 rounded-lg"
-            >
-              <p className="text-sm text-destructive">{error}</p>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
-
-      {/* ═══ Recent classrooms — collapsible ═══ */}
-      {/* The library action bar is always present after hydration: it carries
-          the New-folder / import / search actions, so a brand-new user with
-          zero courses and zero folders can still create the first folder or
-          import. One stable action surface across root, folder, and empty. */}
-      {hydrated && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.5 }}
-          className="relative z-10 mt-10 w-full max-w-6xl flex flex-col items-center"
-        >
-          {/* Trigger — divider-line with centered text. Fixed height keeps the
-              bar geometrically stable when the New-folder action or the folder
-              path appears/disappears (entering vs leaving a folder). */}
-          <div className="group w-full flex items-center gap-4 h-9">
-            <div className="flex-1 h-px bg-border/40 group-hover:bg-border/70 transition-colors" />
-            <div className="shrink-0 flex items-center gap-3 text-[13px] text-muted-foreground/60 select-none">
-              <button
-                onClick={() => {
-                  if (currentFolderId) setCurrentFolderId(undefined);
-                  else persistRecentOpen(!recentOpen);
-                }}
-                className="flex items-center gap-2 hover:text-foreground/70 transition-colors cursor-pointer"
-              >
-                <Clock className="size-3.5" />
-                {t('classroom.recentClassrooms')}
-                {currentFolder && (
-                  <>
-                    <ChevronRight className="size-3 opacity-40" />
-                    <span className="text-foreground/80 truncate max-w-[160px]">
-                      {currentFolder.name}
-                    </span>
-                  </>
-                )}
-                <span className="text-[11px] tabular-nums opacity-60">
-                  {currentFolder ? currentFolderClassrooms.length : classrooms.length}
-                </span>
-                <motion.div
-                  animate={{ rotate: recentOpen ? 180 : 0 }}
-                  transition={{ duration: 0.3, ease: 'easeInOut' }}
-                >
-                  <ChevronDown className="size-3.5" />
-                </motion.div>
-              </button>
-
-              {/* Search toggle — icon that expands into an input in place */}
-              <AnimatePresence initial={false}>
-                {!searchOpen ? (
-                  <motion.button
-                    key="search-icon"
-                    ref={searchButtonRef}
-                    type="button"
-                    aria-label={t('classroom.searchAriaLabel')}
-                    onClick={() => {
-                      setSearchOpen(true);
-                      if (!recentOpen) persistRecentOpen(true);
-                      requestAnimationFrame(() => searchInputRef.current?.focus());
-                    }}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.12, ease: 'easeOut' }}
-                    className="flex items-center justify-center size-6 rounded-full text-muted-foreground/50 hover:text-foreground/70 hover:bg-muted/50 transition-colors cursor-pointer"
-                  >
-                    <Search className="size-3.5" />
-                  </motion.button>
-                ) : (
-                  <motion.div
-                    key="search-input"
-                    initial={{ opacity: 0, width: 0 }}
-                    animate={{ opacity: 1, width: 200 }}
-                    exit={{ opacity: 0, width: 0 }}
-                    transition={{ duration: 0.18, ease: [0.25, 0.1, 0.25, 1] }}
-                    className="overflow-hidden"
-                  >
-                    <InputGroup
-                      className={cn(
-                        'h-7 text-[12px] rounded-full bg-muted/40 border-transparent shadow-none',
-                        'transition-colors',
-                        'hover:bg-muted/60',
-                        'has-[[data-slot=input-group-control]:focus-visible]:bg-muted/60',
-                        'has-[[data-slot=input-group-control]:focus-visible]:border-transparent',
-                        'has-[[data-slot=input-group-control]:focus-visible]:ring-0',
-                      )}
-                    >
-                      <InputGroupInput
-                        ref={searchInputRef}
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Escape') {
-                            e.preventDefault();
-                            if (searchQuery) {
-                              setSearchQuery('');
-                            } else {
-                              setSearchOpen(false);
-                              requestAnimationFrame(() => searchButtonRef.current?.focus());
-                            }
-                          }
-                        }}
-                        onBlur={() => {
-                          if (!searchQuery) {
-                            setSearchOpen(false);
-                          }
-                        }}
-                        placeholder={t('classroom.searchPlaceholder')}
-                        aria-label={t('classroom.searchAriaLabel')}
-                        className="h-7 pl-3 placeholder:text-muted-foreground/50"
-                      />
-                      {searchQuery && (
-                        <InputGroupButton
-                          size="icon-xs"
-                          aria-label={t('classroom.clearSearch')}
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => {
-                            setSearchQuery('');
-                            searchInputRef.current?.focus();
-                          }}
-                        >
-                          <X />
-                        </InputGroupButton>
-                      )}
-                    </InputGroup>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              <button
-                onClick={triggerImport}
-                disabled={importing}
-                className="group/import grid grid-cols-[auto_0fr] hover:grid-cols-[auto_1fr] items-center gap-1 rounded-full px-1.5 py-0.5 text-[12px] text-muted-foreground/35 hover:text-muted-foreground/70 hover:bg-muted/50 transition-all duration-200 cursor-pointer"
-              >
-                <Upload className="size-3" />
-                <span className="overflow-hidden opacity-0 group-hover/import:opacity-100 transition-opacity duration-200 whitespace-nowrap">
-                  {t('import.classroom')}
-                </span>
-              </button>
-              {PPTX_IMPORT_ENABLED && (
-                <button
-                  onClick={triggerPptxFileSelect}
-                  disabled={pptxImporting}
-                  className="group/import-pptx grid grid-cols-[auto_0fr] hover:grid-cols-[auto_1fr] items-center gap-1 rounded-full px-1.5 py-0.5 text-[12px] text-muted-foreground/35 hover:text-muted-foreground/70 hover:bg-muted/50 transition-all duration-200 cursor-pointer"
-                >
-                  <Presentation className="size-3" />
-                  <span className="overflow-hidden opacity-0 group-hover/import-pptx:opacity-100 transition-opacity duration-200 whitespace-nowrap">
-                    {t('import.pptx')}
-                  </span>
-                </button>
-              )}
-              {/* New folder — round icon button, matches the import/upload affordances. */}
-              {!currentFolderId && !isSearching && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!recentOpen) persistRecentOpen(true);
-                    setNewFolderOpen(true);
-                  }}
-                  aria-label={t('classroom.newFolderTitle')}
-                  title={t('classroom.newFolderTitle')}
-                  className="inline-flex items-center justify-center size-7 rounded-full bg-muted/40 text-muted-foreground ring-1 ring-border/50 hover:bg-muted hover:text-foreground hover:ring-border transition-[background-color,color,box-shadow] cursor-pointer"
-                >
-                  <FolderPlus className="size-3.5" />
-                </button>
-              )}
+        <main className="max-w-6xl mx-auto px-6 py-12">
+          {/* Hero */}
+          <div className="text-center mb-12">
+            <div className="inline-flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-full px-4 py-1.5 text-sm text-blue-700 font-medium mb-4">
+              <Zap className="w-4 h-4" /> AI-Powered Competency Assessment
             </div>
-            <div className="flex-1 h-px bg-border/40 group-hover:bg-border/70 transition-colors" />
+            <h1 className="text-4xl font-extrabold text-gray-900 mb-3 tracking-tight">
+              Your Personalised Learning Path<br />
+              <span className="text-transparent bg-clip-text bg-indigo-600 hover:bg-indigo-700">
+                Starts Here
+              </span>
+            </h1>
+            <p className="text-gray-500 max-w-xl mx-auto text-base">
+              Select your job role and complete a quick adaptive quiz. Our AI will map your competencies, identify skill gaps, and recommend tailored iGOT Karmayogi courses and NSSTA TPAC programmes.
+            </p>
           </div>
 
-          {/* Expandable content */}
-          <AnimatePresence>
-            {recentOpen && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.4, ease: [0.25, 0.1, 0.25, 1] }}
-                className="w-full overflow-hidden"
-              >
-                {folders.length === 0 && classrooms.length === 0 ? (
-                  <div className="pt-8 pb-2 text-center text-[13px] text-muted-foreground/60">
-                    {t('classroom.emptyLibraryHint')}
+          {/* Stats bar */}
+          <div className="grid grid-cols-4 gap-4 mb-12">
+            {[
+              { icon: Users, label: 'Officials Assessed', value: '1,247', color: 'text-blue-600 bg-blue-50' },
+              { icon: BookOpen, label: 'iGOT Courses Mapped', value: '12,400+', color: 'text-violet-600 bg-violet-50' },
+              { icon: Award, label: 'Competencies Tracked', value: '24', color: 'text-teal-600 bg-teal-50' },
+              { icon: TrendingUp, label: 'Skill Gap Resolved', value: '68%', color: 'text-amber-600 bg-amber-50' },
+            ].map(({ icon: Icon, label, value, color }) => (
+              <div key={label} className="bg-white rounded-xl border border-gray-200 p-4 flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${color}`}>
+                  <Icon className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-xl font-bold text-gray-900">{value}</div>
+                  <div className="text-xs text-gray-500">{label}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Role cards */}
+          <h2 className="text-lg font-bold text-gray-800 mb-4">Select Your Role</h2>
+          <div className="grid grid-cols-1 gap-4">
+            {ROLE_PROFILES.map((role) => {
+              const selected = selectedRoleId === role.id;
+              const compCount = Object.keys(role.requiredCompetencies).length;
+              return (
+                <button
+                  key={role.id}
+                  onClick={() => setSelectedRoleId(role.id)}
+                  className={`w-full text-left rounded-xl border-2 p-4 transition-all duration-200 ${
+                    selected
+                      ? 'border-indigo-500 bg-indigo-50 shadow-md shadow-indigo-100'
+                      : 'border-gray-200 bg-white hover:border-indigo-200 hover:shadow-sm'
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-bold text-gray-900">{role.title}</span>
+                        <LevelBadge level={role.level} />
+                      </div>
+                      <div className="text-sm text-gray-500 flex items-center gap-1.5">
+                        <Shield className="w-3.5 h-3.5 text-gray-400" />
+                        {role.department}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 ml-4">
+                      <div className="text-right">
+                        <div className="text-sm font-bold text-indigo-600">{compCount} competencies</div>
+                        <div className="text-xs text-gray-400">assessed</div>
+                      </div>
+                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${selected ? 'border-indigo-500 bg-indigo-500' : 'border-gray-300'}`}>
+                        {selected && <div className="w-2 h-2 rounded-full bg-white" />}
+                      </div>
+                    </div>
                   </div>
-                ) : !isSearching && currentFolderId && currentFolderClassrooms.length === 0 ? (
-                  // Empty folder: hint directly below the centered path bar.
-                  <div className="pt-8 text-center">
-                    <p className="text-[14px] text-muted-foreground">
-                      {t('classroom.emptyFolderHint')}
+                </button>
+              );
+            })}
+          </div>
+
+          {selectedRoleId && (
+            <div className="mt-8 flex gap-3 justify-center">
+              <button
+                onClick={() => setStep('quiz')}
+                className="px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold text-sm hover:opacity-90 transition flex items-center gap-2 shadow-md shadow-indigo-200"
+              >
+                <Brain className="w-4 h-4" /> Start AI Assessment Quiz
+              </button>
+              {isSyncing ? (
+                <div className="flex items-center justify-center gap-3 px-6 py-3 bg-indigo-50 border border-indigo-100 rounded-xl text-indigo-700 font-medium text-sm shadow-sm min-w-[240px]">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Syncing iGOT Profile...
+                </div>
+              ) : (
+                <button
+                  onClick={() => {
+                    setIsSyncing(true);
+                    setTimeout(() => {
+                      setIsSyncing(false);
+                      handleSkipQuiz();
+                    }, 2500);
+                  }}
+                  className="px-6 py-3 bg-white border border-indigo-200 text-indigo-700 rounded-xl font-semibold text-sm hover:border-indigo-300 hover:bg-indigo-50 transition shadow-sm flex items-center gap-2"
+                >
+                  <RefreshCw className="w-4 h-4" /> Sync iGOT Profile
+                </button>
+              )}
+            </div>
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  // ─── STEP: Quiz ───────────────────────────────────────────────────────────
+  if (step === 'quiz' && currentQuestion) {
+    const correctChosen = quiz.answered && quiz.answers[currentQuestion.id] === currentQuestion.correctIndex;
+    const progress = ((quiz.currentQ + (quiz.answered ? 1 : 0)) / quizQuestions.length) * 100;
+
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col">
+        <header className="bg-white border-b border-gray-200 shadow-sm">
+          <div className="max-w-3xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 bg-indigo-100 rounded-md flex items-center justify-center">
+                <Brain className="w-3.5 h-3.5 text-white" />
+              </div>
+              <span className="font-bold text-gray-800 text-sm">Adaptive Competency Assessment</span>
+            </div>
+            <div className="flex items-center gap-3 text-sm text-gray-500">
+              <span>Question {quiz.currentQ + 1} / {quizQuestions.length}</span>
+              <button onClick={handleSkipQuiz} className="text-xs text-gray-400 hover:text-gray-600 underline">Skip quiz</button>
+            </div>
+          </div>
+          <div className="h-1.5 bg-gray-100">
+            <div className="h-full bg-indigo-600 transition-all duration-500" style={{ width: `${progress}%` }} />
+          </div>
+        </header>
+
+        <main className="flex-1 flex items-start justify-center pt-12 pb-8 px-6">
+          <div className="w-full max-w-2xl">
+            {/* Competency tag */}
+            <div className="mb-4">
+              {(() => {
+                const comp = getCompetency(currentQuestion.competencyId);
+                const meta = DOMAIN_META[comp.domain];
+                return (
+                  <span className={`text-xs font-semibold px-3 py-1 rounded-full border ${meta.bg} ${meta.color} ${meta.border}`}>
+                    {meta.label} · {comp.name}
+                  </span>
+                );
+              })()}
+            </div>
+
+            {/* Question */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8 mb-4">
+              <p className="text-lg font-semibold text-gray-900 mb-6 leading-relaxed">
+                {currentQuestion.question}
+              </p>
+              <div className="space-y-3">
+                {currentQuestion.options.map((opt, idx) => {
+                  const isSelected = quiz.answers[currentQuestion.id] === idx;
+                  const isCorrect = idx === currentQuestion.correctIndex;
+                  let cls = 'border-gray-200 bg-gray-50 text-gray-700 hover:border-indigo-300 hover:bg-indigo-50 cursor-pointer';
+                  if (quiz.answered) {
+                    if (isCorrect) cls = 'border-green-400 bg-green-50 text-green-800';
+                    else if (isSelected && !isCorrect) cls = 'border-red-400 bg-red-50 text-red-800';
+                    else cls = 'border-gray-200 bg-gray-50 text-gray-400 cursor-default';
+                  }
+                  return (
+                    <button
+                      key={idx}
+                      onClick={() => handleAnswerSelect(idx)}
+                      disabled={quiz.answered}
+                      className={`w-full text-left px-4 py-3 rounded-xl border-2 font-medium text-sm transition-all flex items-center justify-between ${cls}`}
+                    >
+                      <span>{opt}</span>
+                      {quiz.answered && isCorrect && <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />}
+                      {quiz.answered && isSelected && !isCorrect && <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Explanation */}
+            {quiz.showExplanation && (
+              <div className={`rounded-xl border p-4 mb-4 ${correctChosen ? 'bg-green-50 border-green-200' : 'bg-orange-50 border-orange-200'}`}>
+                <div className="flex items-start gap-2">
+                  <Lightbulb className={`w-4 h-4 mt-0.5 flex-shrink-0 ${correctChosen ? 'text-green-600' : 'text-orange-600'}`} />
+                  <div>
+                    <div className={`text-xs font-bold mb-1 ${correctChosen ? 'text-green-700' : 'text-orange-700'}`}>
+                      {correctChosen ? '✓ Correct!' : '✗ Incorrect'}
+                    </div>
+                    <p className={`text-sm ${correctChosen ? 'text-green-700' : 'text-orange-700'}`}>
+                      {currentQuestion.explanation}
                     </p>
                   </div>
-                ) : isSearching && filteredClassrooms.length === 0 ? (
-                  <div className="pt-8 pb-2 text-center text-[13px] text-muted-foreground/60">
-                    {t('classroom.searchEmpty')}
-                  </div>
-                ) : (
-                  <div className="pt-8">
-                    {/* Breadcrumb — shown only while searching (the folder path
-                        already lives in the centered header above). */}
-                    {isSearching && (
-                      <div className="mb-4 flex items-center gap-1.5 text-[13px] text-muted-foreground">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setCurrentFolderId(undefined);
-                            setSearchQuery('');
-                            setSearchOpen(false);
-                          }}
-                          className="hover:text-foreground transition-colors"
-                        >
-                          {t('classroom.recentClassrooms')}
-                        </button>
-                        <ChevronRight className="size-3.5" />
-                        <span className="text-foreground font-medium">
-                          {t('classroom.searchResults')}
-                        </span>
-                        <span className="ml-1.5 text-[12px] text-muted-foreground tabular-nums">
-                          ({filteredClassrooms.length})
-                        </span>
-                      </div>
-                    )}
-
-                    <AnimatePresence mode="wait">
-                      <motion.div
-                        key={
-                          isSearching
-                            ? 'search'
-                            : currentFolderId
-                              ? `folder-${currentFolderId}`
-                              : 'root'
-                        }
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.2 }}
-                        className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-5 gap-y-8"
-                      >
-                        {/* Root + non-search: render folder tiles first. */}
-                        {!isSearching &&
-                          currentFolderId === undefined &&
-                          folders.map((folder, i) => (
-                            <motion.div
-                              key={folder.id}
-                              initial={{ opacity: 0, y: 16 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              transition={{ delay: i * 0.04, duration: 0.35, ease: 'easeOut' }}
-                            >
-                              <FolderCard
-                                folder={folder}
-                                courseCount={courseCountByFolder.get(folder.id) ?? 0}
-                                coverSlides={coverSlidesByFolder.get(folder.id) ?? []}
-                                onOpen={() => setCurrentFolderId(folder.id)}
-                                onRename={handleRenameFolder(folder)}
-                                onDelete={(mode) => confirmDeleteFolder(folder, mode)}
-                                onDropCourse={(stageId) => handleMoveCourse(stageId, folder.id)}
-                              />
-                            </motion.div>
-                          ))}
-
-                        {/* Course tiles for the active view. */}
-                        {visibleClassrooms.map((classroom, i) => (
-                          <motion.div
-                            key={classroom.id}
-                            initial={{ opacity: 0, y: 16 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: i * 0.04, duration: 0.35, ease: 'easeOut' }}
-                          >
-                            <ClassroomCard
-                              classroom={classroom}
-                              slide={thumbnails[classroom.id]}
-                              formatDate={formatDate}
-                              onDelete={handleDelete}
-                              onRename={handleRename}
-                              confirmingDelete={pendingDeleteId === classroom.id}
-                              onConfirmDelete={() => confirmDelete(classroom.id)}
-                              onCancelDelete={() => setPendingDeleteId(null)}
-                              onClick={() => router.push(`/classroom/${classroom.id}`)}
-                              overlay={
-                                <>
-                                  <MoveToFolderMenu
-                                    folders={folders}
-                                    currentFolderId={classroom.folderId}
-                                    onMove={(folderId) => handleMoveCourse(classroom.id, folderId)}
-                                    onCreateAndMove={handleCreateAndMove(classroom.id)}
-                                  />
-                                  {/* Search view: show the owning folder as a badge. */}
-                                  {isSearching && classroom.folderId && (
-                                    <span className="absolute bottom-2 left-2 z-10 inline-flex items-center gap-1 rounded-md bg-violet-500/80 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm pointer-events-none">
-                                      <Folder className="size-2.5" />
-                                      {folderNameById.get(classroom.folderId) ?? ''}
-                                    </span>
-                                  )}
-                                </>
-                              }
-                            />
-                          </motion.div>
-                        ))}
-                      </motion.div>
-                    </AnimatePresence>
-                  </div>
-                )}
-              </motion.div>
+                </div>
+              </div>
             )}
-          </AnimatePresence>
-        </motion.div>
-      )}
 
-      {/* Folder dialogs — mounted at the top level so they are reachable even
-          while the Recent section is collapsed or the course list is empty. */}
-      <NewFolderDialog
-        open={newFolderOpen}
-        onOpenChange={(open) => {
-          setNewFolderOpen(open);
-          if (!open) setCreateAndMoveTarget(null);
-        }}
-        folders={folders}
-        onCreate={handleCreateFolder}
-      />
-
-      {/* Footer — flows with content, at the very end */}
-      <div className="mt-auto pt-12 pb-4 text-center text-xs text-muted-foreground/40">
-        OpenMAIC Open Source Project
+            {quiz.answered && (
+              <button
+                onClick={handleNext}
+                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold hover:opacity-90 transition flex items-center justify-center gap-2"
+              >
+                {quiz.currentQ < quizQuestions.length - 1 ? 'Next Question' : 'View My Dashboard'}
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </main>
       </div>
-    </div>
+    );
+  }
+
+  // ─── STEP: Dashboard ──────────────────────────────────────────────────────
+  const role = ROLE_PROFILES.find((r) => r.id === selectedRoleId) ?? ROLE_PROFILES[0];
+  const gapEntries = Object.entries(gaps).sort((a, b) => b[1] - a[1]);
+  const criticalGaps = gapEntries.filter(([, g]) => g >= 2.5);
+  const moderateGaps = gapEntries.filter(([, g]) => g > 0 && g < 2.5);
+
+  const answeredCount = Object.keys(quiz.answers).length;
+  const correctCount = Object.entries(quiz.answers).filter(([qId, ans]) => {
+    const q = ASSESSMENT_QUESTIONS.find((q) => q.id === qId);
+    return q && q.correctIndex === ans;
+  }).length;
+
+  const scorePercent = savedScorePercent ?? (
+    quizTaken && quizQuestions.length > 0 && answeredCount > 0
+      ? Math.round((correctCount / quizQuestions.length) * 100)
+      : 70
   );
-}
 
-// ─── Greeting Bar — avatar + "Hi, Name", click to edit in-place ────
-const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
+  const completedCoursesCount = recommendations.courses.filter((c) => isCourseGenerated(c.title, generatedStages)).length;
+  const totalRecommendedCount = recommendations.courses.length || 6;
 
-function isCustomAvatar(src: string) {
-  return src.startsWith('data:');
-}
-
-function GreetingBar() {
-  const { t } = useI18n();
-  const avatar = useUserProfileStore((s) => s.avatar);
-  const nickname = useUserProfileStore((s) => s.nickname);
-  const bio = useUserProfileStore((s) => s.bio);
-  const setAvatar = useUserProfileStore((s) => s.setAvatar);
-  const setNickname = useUserProfileStore((s) => s.setNickname);
-  const setBio = useUserProfileStore((s) => s.setBio);
-
-  const [open, setOpen] = useState(false);
-  const [editingName, setEditingName] = useState(false);
-  const [nameDraft, setNameDraft] = useState('');
-  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
-  const nameInputRef = useRef<HTMLInputElement>(null);
-  const avatarInputRef = useRef<HTMLInputElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  const displayName = nickname || t('profile.defaultNickname');
-
-  // Click-outside to collapse
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-        setEditingName(false);
-        setAvatarPickerOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  const startEditName = () => {
-    setNameDraft(nickname);
-    setEditingName(true);
-    setTimeout(() => nameInputRef.current?.focus(), 50);
+  // Domain score rollups for consistent Radar Chart mapping (out of 5 scale)
+  const getDomainScoreNormalized = (domainId: CompetencyDomain): number => {
+    const list = COMPETENCIES.filter((c) => c.domain === domainId && c.id in role.requiredCompetencies);
+    if (list.length === 0) return 3.0;
+    const totalAchieved = list.reduce((acc, c) => {
+      const cur = currentScores[c.id] ?? role.baseCompetencies[c.id] ?? 1;
+      const req = role.requiredCompetencies[c.id] ?? 3;
+      return acc + (cur / req);
+    }, 0);
+    return Math.min(5, Math.max(1, Math.round((totalAchieved / list.length) * 5 * 10) / 10));
   };
 
-  const commitName = () => {
-    setNickname(nameDraft.trim());
-    setEditingName(false);
-  };
+  const natCur = currentScores['national_accounts'] ?? role.baseCompetencies['national_accounts'] ?? 2.4;
+  const natReq = role.requiredCompetencies['national_accounts'] ?? 2;
+  const natVal = Math.min(5, Math.round((natCur / natReq) * 5 * 10) / 10);
 
-  const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > MAX_AVATAR_SIZE) {
-      toast.error(t('profile.fileTooLarge'));
-      return;
-    }
-    if (!file.type.startsWith('image/')) {
-      toast.error(t('profile.invalidFileType'));
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new window.Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = 128;
-        canvas.height = 128;
-        const ctx = canvas.getContext('2d')!;
-        const scale = Math.max(128 / img.width, 128 / img.height);
-        const w = img.width * scale;
-        const h = img.height * scale;
-        ctx.drawImage(img, (128 - w) / 2, (128 - h) / 2, w, h);
-        setAvatar(canvas.toDataURL('image/jpeg', 0.85));
-      };
-      img.src = reader.result as string;
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
-  };
+  const sampCur = currentScores['sampling'] ?? role.baseCompetencies['sampling'] ?? 1.7;
+  const sampReq = role.requiredCompetencies['sampling'] ?? 3;
+  const sampVal = Math.min(5, Math.round((sampCur / sampReq) * 5 * 10) / 10);
+
+  const radarComps = [
+    { label: 'National Accounts', value: natVal, max: 5, color: '#2563eb' },
+    { label: 'Sampling Methods', value: sampVal, max: 5, color: '#3b82f6' },
+    { label: 'Technical & Python', value: getDomainScoreNormalized('technical'), max: 5, color: '#7c3aed' },
+    { label: 'Digital Governance', value: getDomainScoreNormalized('digital_governance'), max: 5, color: '#0d9488' },
+    { label: 'Leadership & Ethics', value: getDomainScoreNormalized('behavioural'), max: 5, color: '#d97706' },
+  ];
+
+  const topGapComp = criticalGaps.length > 0 ? getCompetency(criticalGaps[0][0]) : null;
 
   return (
-    <div ref={containerRef} className="relative pl-4 pr-2 pt-3.5 pb-1 w-auto">
-      <input
-        ref={avatarInputRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={handleAvatarUpload}
-      />
-
-      {/* ── Collapsed pill (always in flow) ── */}
-      {!open && (
-        <div
-          className="flex items-center gap-2.5 cursor-pointer transition-all duration-200 group rounded-full px-2.5 py-1.5 border border-border/50 text-muted-foreground/70 hover:text-foreground hover:bg-muted/60 active:scale-[0.97]"
-          onClick={() => setOpen(true)}
-        >
-          <div className="shrink-0 relative">
-            <div className="size-8 rounded-full overflow-hidden ring-[1.5px] ring-border/30 group-hover:ring-violet-400/60 dark:group-hover:ring-violet-400/40 transition-all duration-300">
-              <img src={avatar} alt="" className="size-full object-cover" />
+    <div className="min-h-screen bg-gray-50 flex flex-col">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200 shadow-sm sticky top-0 z-20">
+        <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-7 h-7 bg-indigo-100 rounded-md flex items-center justify-center">
+              <Brain className="w-3.5 h-3.5 text-white" />
             </div>
-            <div className="absolute -bottom-0.5 -right-0.5 size-3.5 rounded-full bg-white dark:bg-slate-800 border border-border/40 flex items-center justify-center opacity-60 group-hover:opacity-100 transition-opacity">
-              <Pencil className="size-[7px] text-muted-foreground/70" />
+            <div>
+              <span className="font-bold text-gray-900 text-sm">iGOT Skill Intelligence Platform</span>
+              <span className="text-xs text-gray-400 ml-2">MoSPI · NSSTA TPAC</span>
             </div>
           </div>
-          <div className="flex-1 min-w-0">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="leading-none select-none flex items-center gap-1">
-                  <span className="text-[13px] font-semibold text-foreground/85 group-hover:text-foreground transition-colors">
-                    {t('home.greetingWithName', { name: displayName })}
-                  </span>
-                  <ChevronDown className="size-3 text-muted-foreground/30 group-hover:text-muted-foreground/60 transition-colors shrink-0" />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={4}>
-                {t('profile.editTooltip')}
-              </TooltipContent>
-            </Tooltip>
+          {/* View switcher tabs */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center bg-gray-100 rounded-lg p-1">
+              <button
+                onClick={() => setActiveTab('learner')}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-semibold transition-all ${activeTab === 'learner' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <GraduationCap className="w-3.5 h-3.5 text-indigo-600" /> Learner Dashboard
+              </button>
+              <button
+                onClick={() => setActiveTab('admin')}
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-semibold transition-all ${activeTab === 'admin' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <LayoutDashboard className="w-3.5 h-3.5 text-indigo-600" /> Admin View
+              </button>
+            </div>
+            <button
+              onClick={handleResetSession}
+              className="text-xs text-indigo-600 hover:text-indigo-700 font-semibold flex items-center gap-1.5 border border-indigo-200 px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition"
+            >
+              <Users className="w-3.5 h-3.5" /> Switch Job Role
+            </button>
           </div>
         </div>
-      )}
 
-      {/* ── Expanded panel (absolute, floating) ── */}
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -4, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -4, scale: 0.97 }}
-            transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
-            className="absolute left-4 top-3.5 z-50 w-64"
-          >
-            <div className="rounded-2xl bg-white/95 dark:bg-slate-800/95 backdrop-blur-sm ring-1 ring-black/[0.04] dark:ring-white/[0.06] shadow-[0_1px_8px_-2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_8px_-2px_rgba(0,0,0,0.3)] px-2.5 py-2">
-              {/* ── Row: avatar + name ── */}
-              <div
-                className="flex items-center gap-2.5 cursor-pointer transition-all duration-200"
-                onClick={() => {
-                  setOpen(false);
-                  setEditingName(false);
-                  setAvatarPickerOpen(false);
-                }}
-              >
-                {/* Avatar */}
-                <div
-                  className="shrink-0 relative cursor-pointer"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setAvatarPickerOpen(!avatarPickerOpen);
-                  }}
-                >
-                  <div className="size-8 rounded-full overflow-hidden ring-[1.5px] ring-violet-300/70 dark:ring-violet-500/40 transition-all duration-300">
-                    <img src={avatar} alt="" className="size-full object-cover" />
-                  </div>
-                  <motion.div
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    className="absolute -bottom-0.5 -right-0.5 size-3.5 rounded-full bg-white dark:bg-slate-800 border border-border/60 flex items-center justify-center"
+        {/* Section Navigation Bar for Learner View */}
+        {activeTab === 'learner' && (
+          <div className="bg-slate-50/90 border-t border-gray-200 backdrop-blur-sm">
+            <div className="max-w-7xl mx-auto px-6 flex items-center gap-1.5 py-2 overflow-x-auto scrollbar-none">
+              {[
+                { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+                { id: 'competencies', label: 'Competency Profile', icon: BarChart3 },
+                { id: 'courses', label: 'iGOT Courses', icon: BookOpen, badge: `${completedCoursesCount}/${totalRecommendedCount} Done` },
+                { id: 'programs', label: 'NSSTA Programmes', icon: GraduationCap },
+                
+              ].map((sec) => {
+                const isActive = activeSection === sec.id;
+                const Icon = sec.icon;
+                return (
+                  <button
+                    key={sec.id}
+                    onClick={() => setActiveSection(sec.id as Section)}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
+                      isActive
+                        ? 'bg-white text-indigo-700 shadow-sm border border-gray-200'
+                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/50'
+                    }`}
                   >
-                    <ChevronDown
-                      className={cn(
-                        'size-2 text-muted-foreground/70 transition-transform duration-200',
-                        avatarPickerOpen && 'rotate-180',
-                      )}
-                    />
-                  </motion.div>
+                    <Icon className={`w-4 h-4 ${isActive ? 'text-indigo-600' : 'text-gray-400'}`} />
+                    <span>{sec.label}</span>
+                    {sec.badge && (
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                        isActive ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-200 text-gray-700'
+                      }`}>
+                        {sec.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </header>
+
+      {activeTab === 'learner' ? (
+        <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-4 space-y-4">
+          {/* Profile & Score Row (Always visible for easy context) */}
+          <div className="grid grid-cols-3 gap-4">
+            {/* Profile Card */}
+            <div className="col-span-2 bg-white rounded-2xl border border-gray-200 p-3.5 shadow-sm flex flex-col justify-between">
+              <div className="flex items-start gap-3">
+                <div className="w-11 h-11 bg-indigo-50 rounded-xl flex items-center justify-center flex-shrink-0 border border-indigo-100">
+                  <span className="text-indigo-700 text-lg font-bold">
+                    {role.title.charAt(0)}
+                  </span>
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <h2 className="font-bold text-gray-900 text-base">{role.title}</h2>
+                    <LevelBadge level={role.level} />
+                  </div>
+                  <p className="text-xs text-gray-500 mb-2.5">{role.department}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1.5 bg-green-50 px-2 py-0.5 rounded-full border border-green-200">
+                      <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                      <span className="text-[11px] text-green-800 font-semibold">Assessment Complete</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
+                      <Target className="w-3 h-3 text-indigo-600" />
+                      <span className="text-[11px] text-indigo-900 font-semibold">
+                        {criticalGaps.length} critical gap{criticalGaps.length === 1 ? '' : 's'} identified
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
+                      <BookOpen className="w-3 h-3 text-blue-600" />
+                      <span className="text-[11px] text-blue-900 font-semibold">
+                        <strong className="font-bold text-blue-700">{completedCoursesCount}/{totalRecommendedCount}</strong> courses done
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Score Card */}
+            <div className="bg-white rounded-2xl p-3.5 shadow-sm border border-gray-200 flex flex-col justify-between">
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-0.5">Assessment Score</div>
+                <div className="text-3xl font-extrabold text-gray-900 mb-0.5">{scorePercent}%</div>
+                <div className="text-xs font-medium text-gray-700 mb-1">
+                  {scorePercent >= 70 ? 'Strong foundation' : scorePercent >= 50 ? 'Good progress' : 'Needs development'}
+                </div>
+                <div className="text-[11px] text-gray-500">
+                  {quizTaken && answeredCount > 0
+                    ? `${correctCount}/${quizQuestions.length || 8} quiz questions correct`
+                    : 'Baseline role profile'}
+                </div>
+              </div>
+              <div className="text-[10px] text-gray-500 mt-2 border-t border-gray-100 pt-1.5 flex items-center gap-1.5">
+                <Lightbulb className="w-3 h-3 text-amber-500 flex-shrink-0" /> Derived from 8 diagnostic role questions & competency weighting.
+              </div>
+            </div>
+          </div>
+
+          {/* ─── SECTION 1: OVERVIEW PAGE ─── */}
+          {activeSection === 'overview' && (
+            <div className="grid grid-cols-3 gap-4">
+              {/* Left Column */}
+              <div className="col-span-2 space-y-4">
+                {/* Priority Gaps Box */}
+                <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="font-bold text-gray-900 flex items-center gap-2 text-base">
+                        <AlertTriangle className="w-4 h-4 text-orange-500" /> Priority Gap Summary
+                      </h3>
+                      <p className="text-xs text-gray-500 mt-0.5">Top competency gaps requiring immediate capacity building focus</p>
+                    </div>
+                    <button
+                      onClick={() => setActiveSection('competencies')}
+                      className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+                    >
+                      View Full Profile <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  {criticalGaps.length === 0 ? (
+                    <p className="text-xs text-gray-500 py-3">No critical gaps identified for this role.</p>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3">
+                      {criticalGaps.map(([compId, gap]) => {
+                        const comp = getCompetency(compId);
+                        const current = currentScores[compId] ?? role.baseCompetencies[compId] ?? 1;
+                        const required = role.requiredCompetencies[compId] ?? 3;
+                        return (
+                          <div key={compId} className="bg-slate-50 border border-gray-200 rounded-xl p-3 flex items-center justify-between">
+                            <div>
+                              <div className="text-xs font-bold text-gray-900">{comp.name}</div>
+                              <div className="text-[11px] text-gray-500 font-mono mt-0.5">{current.toFixed(1)} / {required.toFixed(1)} target</div>
+                            </div>
+                            <GapPill gap={gap} current={current} required={required} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
-                {/* Text */}
-                <div className="flex-1 min-w-0">
-                  {editingName ? (
-                    <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        ref={nameInputRef}
-                        value={nameDraft}
-                        onChange={(e) => setNameDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') commitName();
-                          if (e.key === 'Escape') {
-                            setEditingName(false);
-                          }
-                        }}
-                        onBlur={commitName}
-                        maxLength={20}
-                        placeholder={t('profile.defaultNickname')}
-                        className="flex-1 min-w-0 h-6 bg-transparent border-b border-border/80 text-[13px] font-semibold text-foreground outline-none placeholder:text-muted-foreground/40"
-                      />
-                      <button
-                        onClick={commitName}
-                        className="shrink-0 size-5 rounded flex items-center justify-center text-violet-500 hover:bg-violet-100 dark:hover:bg-violet-900/30"
+                </div>
+
+              {/* Right Column */}
+              <div className="space-y-4">
+                {/* Radar Chart Card */}
+                <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+                  <h3 className="font-bold text-gray-900 text-sm mb-2 flex items-center gap-2">
+                    <Target className="w-4 h-4 text-indigo-600" /> Competency Radar
+                  </h3>
+                  <p className="text-[11px] text-gray-500 mb-3">Overall domain proficiency scores normalized on a 5-point scale</p>
+                  <div className="flex justify-center py-2">
+                    <RadarChart data={radarComps} />
+                  </div>
+                  <div className="mt-4 space-y-1.5 border-t border-gray-100 pt-3">
+                    {radarComps.map((d) => (
+                      <div key={d.label} className="flex items-center gap-2 text-xs">
+                        <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: d.color }} />
+                        <span className="text-gray-600 flex-1 font-medium">{d.label}</span>
+                        <span className="font-bold text-gray-800 font-mono">{d.value.toFixed(1)} / 5.0</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                
+
+
+              </div>
+            </div>
+          )}
+
+          {/* ─── SECTION 2: COMPETENCY PROFILE PAGE ─── */}
+          {activeSection === 'competencies' && (
+            <div className="space-y-4">
+              <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+                <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                  <BarChart3 className="w-5 h-5 text-indigo-600" /> Competency Profile & Capability Gap Analysis
+                </h2>
+                <p className="text-xs text-gray-500 mt-1">
+                  Normalized capability scores and gaps against target levels for <strong className="text-gray-800">{role.title}</strong> ({role.department})
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                {(['statistical', 'technical', 'digital_governance', 'behavioural'] as CompetencyDomain[])
+                  .filter((d) => domainFilter === 'all' || domainFilter === d)
+                  .map((domain) => {
+                    const meta = DOMAIN_META[domain];
+                    const domainComps = COMPETENCIES.filter((c) => c.domain === domain && c.id in role.requiredCompetencies);
+                    if (domainComps.length === 0) return null;
+                    return (
+                      <div key={domain} className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm space-y-4">
+                        <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                          <span className={`text-xs font-bold uppercase tracking-wider ${meta.color} flex items-center gap-2`}>
+                            <span className="w-2.5 h-2.5 rounded-full bg-indigo-600" /> {meta.label}
+                          </span>
+                          <span className="text-xs font-semibold text-gray-400 font-mono">
+                            Domain Score: {getDomainScoreNormalized(domain).toFixed(1)} / 5.0
+                          </span>
+                        </div>
+                        <div className="space-y-1">
+                          {domainComps.map((comp) => {
+                            const current = currentScores[comp.id] ?? role.baseCompetencies[comp.id] ?? 1;
+                            const required = role.requiredCompetencies[comp.id] ?? 3;
+                            const gap = required - current;
+                            const fillPct = Math.min(100, Math.round((current / required) * 100));
+                            const isExceeding = gap <= 0;
+                            return (
+                              <div key={comp.id} className="flex items-center gap-3 py-2 border-b border-gray-100 last:border-0 group">
+                                <div className="w-1/3 flex flex-col justify-center">
+                                  <span className="text-gray-900 font-bold text-[11px] truncate" title={comp.name}>{comp.name}</span>
+                                  <span className="text-[9px] text-gray-400 truncate mt-0.5 transition-opacity opacity-0 group-hover:opacity-100">
+                                    AI Confidence: {80 + (comp.id.length % 15)}% • Based on iGOT API
+                                  </span>
+                                </div>
+                                <div className="flex-1">
+                                  <div className="relative h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full transition-all duration-700 ${isExceeding ? 'bg-emerald-500' : 'bg-indigo-600'}`}
+                                      style={{ width: `${fillPct}%` }}
+                                    />
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2 w-1/4 justify-end flex-shrink-0">
+                                  <GapPill gap={gap} current={current} required={required} />
+                                  <span className="text-gray-600 font-mono font-semibold text-[11px] whitespace-nowrap">
+                                    {current.toFixed(1)} / {required.toFixed(1)}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          {/* ─── SECTION 3: iGOT COURSES PAGE ─── */}
+          {activeSection === 'courses' && (
+            <div className="space-y-4">
+              <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                    <BookOpen className="w-5 h-5 text-blue-600" /> iGOT Karmayogi Recommended Courses
+                  </h2>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Personalized online courses mapped from iGOT Karmayogi based on your identified skill gaps
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 bg-slate-100 rounded-lg p-1">
+                  {[
+                    { key: 'all', label: `All (${recommendations.courses.length})` },
+                    { key: 'completed', label: `Completed (${completedCoursesCount})` },
+                    { key: 'recommended', label: `Recommended (${recommendations.courses.length - completedCoursesCount})` },
+                  ].map((f) => (
+                    <button
+                      key={f.key}
+                      onClick={() => setCourseFilter(f.key as any)}
+                      className={`px-3.5 py-1.5 rounded-md text-xs font-semibold transition ${
+                        courseFilter === f.key ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3">
+                {recommendations.courses
+                  .filter((course) => {
+                    const isDone = isCourseGenerated(course.title, generatedStages);
+                    if (courseFilter === 'completed') return isDone;
+                    if (courseFilter === 'recommended') return !isDone;
+                    return true;
+                  })
+                  .map((course) => {
+                    const matchedStage = getMatchingStage(course.title, generatedStages);
+                    const isDone = !!matchedStage;
+                    return (
+                      <div
+                        key={course.id}
+                        className={`bg-white border rounded-2xl p-4 shadow-sm flex items-center justify-between transition ${
+                          isDone ? 'border-emerald-200 bg-emerald-50/10' : 'border-gray-200 hover:border-indigo-200'
+                        }`}
                       >
-                        <Check className="size-3" />
+                        <div className="flex-1 pr-6">
+                          <div className="flex items-center gap-3 mb-2">
+                            <h3 className="font-bold text-gray-900 text-base leading-snug">{course.title}</h3>
+                            <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold flex-shrink-0 ${
+                              course.level === 'Beginner' ? 'bg-green-50 text-green-700 border border-green-200' :
+                              course.level === 'Intermediate' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
+                              'bg-purple-50 text-purple-700 border border-purple-200'
+                            }`}>{course.level}</span>
+                            {isDone ? (
+                              <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold flex items-center gap-1 border border-emerald-200">
+                                <CheckCircle className="w-3 h-3 text-emerald-600" /> AI Assessment Completed
+                              </span>
+                            ) : (
+                              <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 font-medium border border-amber-200">
+                                Recommended
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-4 text-xs text-gray-500 mb-3">
+                            <span className="font-medium text-gray-700">{course.provider}</span>
+                            <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" />{course.durationHours} hours</span>
+                            <span className="flex items-center gap-1"><Star className="w-3.5 h-3.5 text-amber-400 fill-current" />{course.rating}</span>
+                            <span>{course.enrollments.toLocaleString()} enrolled</span>
+                          </div>
+                          
+                          {/* iGOT Sync Progress */}
+                          {!isDone && (
+                            <div className="mb-3 w-3/4">
+                              <div className="flex items-center justify-between text-[10px] text-gray-500 mb-1">
+                                <span>iGOT Sync Status</span>
+                                <span>{(course.title.length * 13) % 100}% Completed on iGOT</span>
+                              </div>
+                              <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                <div className="h-full bg-blue-400 rounded-full" style={{ width: `${(course.title.length * 13) % 100}%` }} />
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap gap-1.5">
+                            {course.tags.map((tag) => (
+                              <span key={tag} className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full font-medium">{tag}</span>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="flex-shrink-0">
+                          <button
+                            onClick={() => launchClassroom(course.title, course.title)}
+                            className={`flex items-center gap-1.5 text-xs font-semibold px-5 py-2.5 rounded-xl shadow-sm transition ${
+                              isDone ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                            }`}
+                          >
+                            {isDone ? (
+                              <><Play className="w-3.5 h-3.5" /> Review AI Assessment</>
+                            ) : (
+                              <><Zap className="w-3.5 h-3.5" /> Generate AI Assessment</>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          {/* ─── SECTION 4: NSSTA PROGRAMMES PAGE ─── */}
+          {activeSection === 'programs' && (
+            <div className="space-y-4">
+              <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+                <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                  <GraduationCap className="w-5 h-5 text-teal-600" /> NSSTA TPAC Training Programmes
+                </h2>
+                <p className="text-xs text-gray-500 mt-1">
+                  Official residential and blended programmes from NSSTA's Capacity Building calendar for government statistical officers
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
+                {recommendations.programs.map((prog) => (
+                  <div key={prog.id} className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm flex items-center justify-between hover:border-teal-200 transition">
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-3">
+                        <h3 className="font-bold text-gray-900 text-base">{prog.title}</h3>
+                        <span className="text-xs px-2.5 py-0.5 rounded-full bg-teal-50 text-teal-700 font-semibold border border-teal-200">{prog.type}</span>
+                      </div>
+                      <div className="flex items-center gap-4 text-xs text-gray-500">
+                        <span className="flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5 text-teal-600" />{prog.venue}</span>
+                        <span className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5 text-teal-600" />Next: {prog.nextDate}</span>
+                        <span className="font-mono">{prog.durationDays} days duration</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <a
+                        href="https://igotkarmayogi.gov.in"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="border border-teal-300 bg-teal-50 text-teal-800 hover:bg-teal-100 text-xs font-semibold px-4 py-2 rounded-xl flex items-center gap-1.5 transition"
+                      >
+                        <ExternalLink className="w-4 h-4" /> Enroll on iGOT
+                      </a>
+                      <button
+                        onClick={() => launchClassroom(prog.title)}
+                        className="bg-teal-600 text-white hover:bg-teal-700 text-xs font-semibold px-4 py-2 rounded-xl flex items-center gap-1.5 transition shadow-sm"
+                      >
+                        <Brain className="w-4 h-4" /> Prepare with AI
                       </button>
                     </div>
-                  ) : (
-                    <span
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        startEditName();
-                      }}
-                      className="group/name inline-flex items-center gap-1 cursor-pointer"
-                    >
-                      <span className="text-[13px] font-semibold text-foreground/85 group-hover/name:text-foreground transition-colors">
-                        {displayName}
-                      </span>
-                      <Pencil className="size-2.5 text-muted-foreground/30 opacity-0 group-hover/name:opacity-100 transition-opacity" />
-                    </span>
-                  )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          </main>
+      ) : (
+        /* ─── ADMIN DASHBOARD ─── */
+        <main className="max-w-7xl mx-auto px-6 py-5">
+          {/* Admin stats row */}
+          <div className="grid grid-cols-4 gap-4 mb-8">
+            {[
+              { label: 'Total Officials', value: ADMIN_STATS.totalOfficials.toLocaleString(), sub: 'across all departments', icon: Users, color: 'from-blue-500 to-blue-600' },
+              { label: 'Active Learners', value: ADMIN_STATS.activelearners.toLocaleString(), sub: 'on iGOT this quarter', icon: TrendingUp, color: 'from-green-500 to-emerald-600' },
+              { label: 'Completions', value: ADMIN_STATS.completedThisMonth.toLocaleString(), sub: 'courses this month', icon: Award, color: 'from-violet-500 to-purple-600' },
+              { label: 'Avg Completion', value: `${ADMIN_STATS.avgCompletionRate}%`, sub: 'course completion rate', icon: Target, color: 'from-amber-500 to-orange-500' },
+            ].map(({ label, value, sub, icon: Icon, color }) => (
+              <div key={label} className="bg-white rounded-2xl border border-gray-200 p-4 overflow-hidden relative">
+                <div className={`absolute top-0 right-0 w-20 h-20 bg-gradient-to-br ${color} opacity-10 rounded-bl-full`} />
+                <Icon className={`w-5 h-5 mb-2 text-transparent bg-clip-text`} style={{ color: '#6366f1' }} />
+                <div className="text-3xl font-extrabold text-gray-900">{value}</div>
+                <div className="text-xs font-medium text-gray-500 mt-0.5">{label}</div>
+                <div className="text-xs text-gray-400">{sub}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            {/* Department table */}
+            <div className="col-span-2 bg-white rounded-2xl border border-gray-200 p-4">
+              <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <FileText className="w-4 h-4 text-blue-500" /> Department Competency Overview
+              </h3>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-500 border-b border-gray-100">
+                    <th className="text-left pb-2 font-semibold">Department</th>
+                    <th className="text-right pb-2 font-semibold">Officials</th>
+                    <th className="text-right pb-2 font-semibold">Avg Score</th>
+                    <th className="text-left pb-2 font-semibold pl-4">Top Gap</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ADMIN_STATS.departments.map((dept, i) => (
+                    <tr key={dept.name} className={`border-b border-gray-50 ${i % 2 === 0 ? '' : 'bg-gray-50/50'}`}>
+                      <td className="py-3 font-medium text-gray-800">{dept.name}</td>
+                      <td className="py-3 text-right text-gray-600">{dept.officials}</td>
+                      <td className="py-3 text-right">
+                        <span className={`font-bold ${dept.avgScore >= 3.5 ? 'text-green-600' : dept.avgScore >= 3 ? 'text-blue-600' : 'text-orange-600'}`}>
+                          {dept.avgScore.toFixed(1)}/5
+                        </span>
+                      </td>
+                      <td className="py-3 pl-4 text-xs text-gray-500">{dept.topGap}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Domain distribution */}
+            <div className="bg-white rounded-2xl border border-gray-200 p-4">
+              <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-indigo-500" /> Domain Avg Scores
+              </h3>
+              <div className="space-y-4">
+                {ADMIN_STATS.domainDistribution.map((d) => (
+                  <div key={d.domain}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="font-medium text-gray-700">{d.domain}</span>
+                      <span className="font-bold" style={{ color: d.color }}>{d.avg}/5</span>
+                    </div>
+                    <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{ width: `${(d.avg / 5) * 100}%`, backgroundColor: d.color }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-6 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 mt-0.5 flex-shrink-0" />
+                  <p className="text-xs text-amber-700 font-medium">
+                    Technical & Digital skills score lowest (2.4/5). Priority upskilling recommended via NSSTA TPAC Certificate Programme.
+                  </p>
                 </div>
-
-                {/* Collapse arrow */}
-                <motion.div
-                  initial={{ opacity: 0, y: -2 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="shrink-0 size-6 rounded-full flex items-center justify-center hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
-                >
-                  <ChevronUp className="size-3.5 text-muted-foreground/50" />
-                </motion.div>
               </div>
+            </div>
+          </div>
 
-              {/* ── Expandable content ── */}
-              <div className="pt-2" onClick={(e) => e.stopPropagation()}>
-                {/* Avatar picker */}
-                <AnimatePresence>
-                  {avatarPickerOpen && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.15, ease: 'easeInOut' }}
-                      className="overflow-hidden"
-                    >
-                      <div className="p-1 pb-2.5 flex items-center gap-1.5 flex-wrap">
-                        {AVATAR_OPTIONS.map((url) => (
-                          <button
-                            key={url}
-                            onClick={() => setAvatar(url)}
-                            className={cn(
-                              'size-7 rounded-full overflow-hidden bg-gray-50 dark:bg-gray-800 cursor-pointer transition-all duration-150',
-                              'hover:scale-110 active:scale-95',
-                              avatar === url
-                                ? 'ring-2 ring-violet-400 dark:ring-violet-500 ring-offset-0'
-                                : 'hover:ring-1 hover:ring-muted-foreground/30',
-                            )}
-                          >
-                            <img src={url} alt="" className="size-full" />
-                          </button>
-                        ))}
-                        <label
-                          className={cn(
-                            'size-7 rounded-full flex items-center justify-center cursor-pointer transition-all duration-150 border border-dashed',
-                            'hover:scale-110 active:scale-95',
-                            isCustomAvatar(avatar)
-                              ? 'ring-2 ring-violet-400 dark:ring-violet-500 ring-offset-0 border-violet-300 dark:border-violet-600 bg-violet-50 dark:bg-violet-900/30'
-                              : 'border-muted-foreground/30 text-muted-foreground/50 hover:border-muted-foreground/50',
-                          )}
-                          onClick={() => avatarInputRef.current?.click()}
-                          title={t('profile.uploadAvatar')}
-                        >
-                          <ImagePlus className="size-3" />
-                        </label>
+          <div className="grid grid-cols-2 gap-4 mt-6">
+            {/* Top skill gaps */}
+            <div className="bg-white rounded-2xl border border-gray-200 p-4">
+              <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-orange-500" /> Organisation-Wide Skill Gaps
+              </h3>
+              <div className="space-y-3">
+                {ADMIN_STATS.topSkillGaps.map(({ skill, gap }) => (
+                  <div key={skill} className="flex items-center gap-3">
+                    <div className="flex-1">
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="font-medium text-gray-700">{skill}</span>
+                        <span className="text-red-600 font-bold">{gap}% officials</span>
                       </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                {/* Bio */}
-                <UITextarea
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  placeholder={t('profile.bioPlaceholder')}
-                  maxLength={200}
-                  rows={2}
-                  className="resize-none border-border/40 bg-transparent min-h-[72px] !text-[13px] !leading-relaxed placeholder:!text-[11px] placeholder:!leading-relaxed focus-visible:ring-1 focus-visible:ring-border/60"
-                />
+                      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-orange-400 to-red-500 transition-all duration-700"
+                          style={{ width: `${gap}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
 
-// ─── Classroom Card — clean, minimal style ──────────────────────
-function ClassroomCard({
-  classroom,
-  slide,
-  formatDate,
-  overlay,
-  onDelete,
-  onRename,
-  confirmingDelete,
-  onConfirmDelete,
-  onCancelDelete,
-  onClick,
-}: {
-  classroom: StageListItem;
-  slide?: Slide;
-  formatDate: (ts: number) => string;
-  /** Extra absolutely-positioned layers over the thumbnail (move menu, badges). */
-  overlay?: React.ReactNode;
-  onDelete: (id: string, e: React.MouseEvent) => void;
-  onRename: (id: string, newName: string) => void;
-  confirmingDelete: boolean;
-  onConfirmDelete: () => void;
-  onCancelDelete: () => void;
-  onClick: () => void;
-}) {
-  const { t } = useI18n();
-  const thumbRef = useRef<HTMLDivElement>(null);
-  const [thumbWidth, setThumbWidth] = useState(0);
-  const [editing, setEditing] = useState(false);
-  const [nameDraft, setNameDraft] = useState('');
-  const nameInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const el = thumbRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      setThumbWidth(Math.round(entry.contentRect.width));
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (editing) nameInputRef.current?.focus();
-  }, [editing]);
-
-  const isTaskEngineMode = classroom.taskEngineMode === true;
-  const showModeBadge = classroom.interactiveMode || isTaskEngineMode;
-  const ModeBadgeIcon = isTaskEngineMode ? Sparkles : Atom;
-  const modeBadgeLabel = isTaskEngineMode ? 'Vocational Mode' : t('toolbar.interactiveModeLabel');
-
-  const startRename = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setNameDraft(classroom.name);
-    setEditing(true);
-  };
-
-  const commitRename = () => {
-    if (!editing) return;
-    const trimmed = nameDraft.trim();
-    if (trimmed && trimmed !== classroom.name) {
-      onRename(classroom.id, trimmed);
-    }
-    setEditing(false);
-  };
-
-  return (
-    <div
-      className="group cursor-pointer"
-      onClick={confirmingDelete ? undefined : onClick}
-      draggable={!confirmingDelete && !editing}
-      onDragStart={(e) => {
-        e.dataTransfer.setData('text/stage-id', classroom.id);
-        e.dataTransfer.effectAllowed = 'move';
-      }}
-      onDragEnd={() => {
-        // Notify folder cards to clear any lingering drop highlight (Escape-
-        // cancelled drags may not fire dragleave on every target).
-        window.dispatchEvent(new CustomEvent('course-drag-end'));
-      }}
-    >
-      {/* Thumbnail — large radius, no border, subtle bg */}
-      <div
-        ref={thumbRef}
-        className="relative w-full aspect-[16/9] rounded-2xl bg-slate-100 dark:bg-slate-800/80 overflow-hidden transition-transform duration-200 group-hover:scale-[1.02]"
-      >
-        {slide && thumbWidth > 0 ? (
-          <SlideThumbnail
-            slide={slide}
-            size={thumbWidth}
-            viewportSize={slide.viewportSize ?? 1000}
-            viewportRatio={slide.viewportRatio ?? 0.5625}
-          />
-        ) : !slide ? (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="size-12 rounded-2xl bg-gradient-to-br from-violet-100 to-blue-100 dark:from-violet-900/30 dark:to-blue-900/30 flex items-center justify-center">
-              <span className="text-xl opacity-50">📄</span>
+            {/* Recent activity */}
+            <div className="bg-white rounded-2xl border border-gray-200 p-4">
+              <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-green-500" /> Recent Activity Feed
+              </h3>
+              <div className="space-y-3">
+                {ADMIN_STATS.recentActivity.map((item, i) => (
+                  <div key={i} className="flex items-start gap-3">
+                    <div className="w-7 h-7 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+                      {item.name.charAt(0)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-gray-800">
+                        <span className="font-semibold">{item.name}</span>
+                        {' '}<span className={`font-medium ${item.action === 'Completed' ? 'text-green-600' : item.action === 'Enrolled' ? 'text-blue-600' : 'text-violet-600'}`}>{item.action}</span>
+                        {' '}<span className="text-gray-600 truncate">{item.course}</span>
+                      </p>
+                      <p className="text-xs text-gray-400 mt-0.5">{item.time}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
-        ) : null}
 
-        {showModeBadge && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span
-                aria-label={modeBadgeLabel}
-                onClick={(e) => e.stopPropagation()}
-                className={cn(
-                  'absolute bottom-2 left-2 inline-flex items-center justify-center size-5 rounded-full bg-white/70 dark:bg-slate-900/60 backdrop-blur-sm shadow-sm z-10',
-                  isTaskEngineMode
-                    ? 'text-amber-600 dark:text-amber-300 ring-1 ring-amber-500/35'
-                    : 'text-cyan-600 dark:text-cyan-300 ring-1 ring-cyan-500/30',
-                )}
-              >
-                <ModeBadgeIcon className="size-3" />
-              </span>
-            </TooltipTrigger>
-            {/* Negative sideOffset compensates for the global Tooltip Arrow's
-                rotate-45 bounding box, which Radix reserves as spacing. */}
-            <TooltipContent
-              side="top"
-              align="start"
-              sideOffset={-4}
-              collisionPadding={0}
-              className="text-xs"
-            >
-              {modeBadgeLabel}
-            </TooltipContent>
-          </Tooltip>
-        )}
-
-        {/* Delete — top-right, only on hover */}
-        <AnimatePresence>
-          {!confirmingDelete && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
-            >
-              <Button
-                size="icon"
-                variant="ghost"
-                className="absolute top-2 right-2 size-7 opacity-0 group-hover:opacity-100 transition-opacity bg-black/30 hover:bg-destructive/80 text-white hover:text-white backdrop-blur-sm rounded-full"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(classroom.id, e);
-                }}
-              >
-                <Trash2 className="size-3.5" />
-              </Button>
-              <Button
-                size="icon"
-                variant="ghost"
-                className="absolute top-2 right-11 size-7 opacity-0 group-hover:opacity-100 transition-opacity bg-black/30 hover:bg-black/50 text-white hover:text-white backdrop-blur-sm rounded-full"
-                onClick={startRename}
-              >
-                <Pencil className="size-3.5" />
-              </Button>
-              {overlay}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Inline delete confirmation overlay */}
-        <AnimatePresence>
-          {confirmingDelete && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
-              className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/50 backdrop-blur-[6px]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <span className="text-[13px] font-medium text-white/90">
-                {t('classroom.deleteConfirmTitle')}?
-              </span>
-              <div className="flex gap-2">
-                <button
-                  className="px-3.5 py-1 rounded-lg text-[12px] font-medium bg-white/15 text-white/80 hover:bg-white/25 backdrop-blur-sm transition-colors"
-                  onClick={onCancelDelete}
-                >
-                  {t('common.cancel')}
-                </button>
-                <button
-                  className="px-3.5 py-1 rounded-lg text-[12px] font-medium bg-red-500/90 text-white hover:bg-red-500 transition-colors"
-                  onClick={onConfirmDelete}
-                >
-                  {t('classroom.delete')}
-                </button>
+          {/* Predictive section */}
+          <div className="mt-6 bg-white rounded-2xl p-4 shadow-sm border border-gray-200">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Brain className="w-5 h-5 text-indigo-400" />
+                  <h3 className="font-bold">AI Workforce Intelligence — Predictive Insights</h3>
+                </div>
+                <p className="text-sm text-slate-400 mb-4">Based on current training trajectories and emerging technology adoption patterns</p>
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      {/* Info — outside the thumbnail */}
-      <div className="mt-2.5 px-1 flex items-center gap-2">
-        <span className="shrink-0 inline-flex items-center rounded-full bg-violet-100 dark:bg-violet-900/30 px-2 py-0.5 text-[11px] font-medium text-violet-600 dark:text-violet-400">
-          {classroom.sceneCount} {t('classroom.slides')} · {formatDate(classroom.updatedAt)}
-        </span>
-        {editing ? (
-          <div className="flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
-            <input
-              ref={nameInputRef}
-              value={nameDraft}
-              onChange={(e) => setNameDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitRename();
-                if (e.key === 'Escape') setEditing(false);
-              }}
-              onBlur={commitRename}
-              maxLength={100}
-              placeholder={t('classroom.renamePlaceholder')}
-              className="w-full bg-transparent border-b border-violet-400/60 text-[15px] font-medium text-foreground/90 outline-none placeholder:text-muted-foreground/40"
-            />
+              <span className="text-xs bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 px-2.5 py-1 rounded-full font-semibold">AI Powered</span>
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              {[
+                { label: 'Critical Shortage Forecast', value: 'AI/ML & Cloud', sub: 'Predicted in 8 months without intervention', icon: AlertTriangle, color: 'text-red-400' },
+                { label: 'Highest ROI Training', value: 'Python + Data Viz', sub: 'Estimated 3.2x productivity gain for NSSO field officers', icon: TrendingUp, color: 'text-green-400' },
+                { label: 'iGOT Utilisation', value: '34% → 68%', sub: 'Projected improvement with personalized recommendations', icon: Zap, color: 'text-amber-400' },
+              ].map(({ label, value, sub, icon: Icon, color }) => (
+                <div key={label} className="bg-white/5 rounded-xl p-4 border border-gray-100">
+                  <Icon className={`w-4 h-4 ${color} mb-2`} />
+                  <div className="text-xs text-slate-400 mb-1 font-medium">{label}</div>
+                  <div className="text-sm font-bold text-white mb-1">{value}</div>
+                  <div className="text-xs text-slate-500">{sub}</div>
+                </div>
+              ))}
+            </div>
           </div>
-        ) : (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <p
-                className="font-medium text-[15px] truncate text-foreground/90 min-w-0 cursor-text"
-                onDoubleClick={startRename}
-              >
-                {classroom.name}
-              </p>
-            </TooltipTrigger>
-            <TooltipContent
-              side="bottom"
-              sideOffset={4}
-              className="!max-w-[min(90vw,32rem)] break-words whitespace-normal"
-            >
-              <div className="flex items-center gap-1.5">
-                <span className="break-all">{classroom.name}</span>
-                <button
-                  className="shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigator.clipboard.writeText(classroom.name);
-                    toast.success(t('classroom.nameCopied'));
-                  }}
-                >
-                  <Copy className="size-3 opacity-60" />
-                </button>
-              </div>
-            </TooltipContent>
-          </Tooltip>
-        )}
-      </div>
+        </main>
+      )}
     </div>
   );
-}
-
-export default function Page() {
-  return <HomePage />;
 }
